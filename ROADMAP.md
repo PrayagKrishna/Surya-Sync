@@ -5,10 +5,14 @@ Do not start phase N+1 until phase N's exit criteria are met and tested.
 Update the checkbox and the "Current phase" line in CLAUDE.md when a phase
 closes.
 
-- [ ] **Phase 0 — Architecture**
+- [x] **Phase 0 — Architecture** ✅
   Interfaces (`Scheduler`, `FlexibleResource`), config schema, DB schema.
   Exit: directory tree exists, interfaces are stubbed, `config/` loads,
   SQLite schema created, no logic yet.
+  *Met: tree + stubs in place; `load_config()` validates and hashes;
+  `python -m surya_sync.main --init-db` creates schema v1 idempotently;
+  72 tests pass. Only `config/loader.py` and `storage/database.py` carry
+  implementation — required by the exit criteria themselves.*
 
 - [ ] **Phase 1 — Simulator**
   Tank simulator, pump model, demand profiles, solar profiles, grid model.

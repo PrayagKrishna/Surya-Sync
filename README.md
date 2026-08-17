@@ -74,8 +74,8 @@ Actively in development, following a 16-phase roadmap (see [`ROADMAP.md`](ROADMA
 
 | Phase | Description | Status |
 |---|---|---|
-| 0 | Architecture, interfaces, config, DB schema | 🚧 In progress |
-| 1 | Simulator (tank, pump, demand, solar) | ⬜ Not started |
+| 0 | Architecture, interfaces, config, DB schema | ✅ Complete |
+| 1 | Simulator (tank, pump, demand, solar) | 🚧 Next |
 | 2 | Conventional threshold control | ⬜ Not started |
 | 3 | Solar-reactive control | ⬜ Not started |
 | 4–16 | Temporal learning → ML → MPC → hardware → frontend | ⬜ Not started |
@@ -106,7 +106,25 @@ Results in this repo are explicitly labeled as **Measured**, **Simulated**, **Pr
 
 ## Running Locally
 
-*(To be filled in as Phase 0–1 land — setup instructions, dependencies, simulator quickstart.)*
+Requires Python 3.11+ (for `tomllib`). Phase 0 has **no third-party runtime
+dependencies** — deliberately, since everything eventually runs on a Pi Zero.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+.venv/bin/python -m surya_sync.main --show-config   # resolved config + hash
+.venv/bin/python -m surya_sync.main --init-db       # create SQLite schema
+.venv/bin/python -m pytest                          # test suite
+```
+
+Configuration lives in [`surya_sync/config/default.toml`](surya_sync/config/default.toml).
+Copy it and pass `--config path/to/your.toml` for a real deployment rather than
+editing the packaged defaults. Every resolved config is hashed, and the hash is
+recorded with each run so any result traces back to the exact parameters that
+produced it.
+
+*(Simulator quickstart lands with Phase 1.)*
 
 ## License
 

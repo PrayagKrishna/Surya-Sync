@@ -1,0 +1,56 @@
+# SuryaSync default configuration.
+#
+# Every physical parameter that can change a result lives here, not in
+# code. The resolved config is hashed and stored with each run so any
+# result can be traced back to the exact parameters that produced it.
+#
+# Copy this file and point SuryaSync at the copy for a real deployment;
+# do not edit the packaged defaults, which tests rely on.
+
+[system]
+mode = "simulated"                 # simulated | real | replay
+timezone = "Asia/Kolkata"
+control_interval_seconds = 60
+
+[tank]
+capacity_l = 1000.0
+height_mm = 1200.0
+sensor_offset_mm = 100.0
+critical_level = 0.20              # hard floor — household service fails below
+min_level = 0.30                   # planning floor; margin absorbs forecast error
+max_level = 0.95                   # overflow protection
+
+[pump]
+rated_power_kw = 0.75
+flow_rate_lpm = 30.0
+min_on_minutes = 5.0
+min_off_minutes = 10.0
+max_starts_per_day = 12
+max_runtime_seconds = 1800         # ESP32-side deadman timer
+
+[solar]
+pv_capacity_kw = 3.0
+latitude = 12.97
+longitude = 77.59
+surplus_threshold_kw = 0.1
+
+[scheduler]
+active = "threshold"               # highest tier to attempt
+horizon_minutes = 720.0
+step_minutes = 15.0
+solver_time_limit_seconds = 5.0
+safety_reserve_level = 0.05        # becomes dynamic in Phase 10
+
+[hardware]
+serial_port = "/dev/ttyUSB0"
+baud_rate = 115200
+read_timeout_seconds = 2.0
+heartbeat_interval_seconds = 5.0
+max_missed_telemetry = 5
+
+[storage]
+database_path = "data/surya_sync.db"
+retain_telemetry_days = 365
+
+[logging]
+level = "INFO"

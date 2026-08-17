@@ -143,6 +143,18 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 0 — Architecture scaffold not yet started.`
+`Phase: 0 complete — architecture scaffold, interfaces, config, DB schema.
+Next: Phase 1 (simulator).`
+
+Landed in Phase 0:
+- `Scheduler` / `FlexibleResource` interfaces (`scheduler/base.py`,
+  `models/generic_resource.py`); everything else in those trees is a stub.
+- Shared vocabulary in `domain.py` (`ControlAction`, `Provenance`,
+  `Forecast`, `Horizon`) — imports nothing, so it can't cause cycles.
+- TOML config via stdlib `tomllib`, validated + hashed (`config/`).
+  Unknown keys are fatal. Zero third-party deps so far.
+- SQLite schema v1, 19 tables (`storage/schema.sql`). Provenance and
+  action values are CHECK-constrained at the DB level, not by convention.
+- 72 tests, all passing (`.venv/bin/python -m pytest`).
 
 See `ROADMAP.md` for the full phase list and exit criteria.
