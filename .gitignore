@@ -10,6 +10,8 @@ venv/
 
 # Data & models (track structure, not large binaries)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 data/raw/
 data/processed/
