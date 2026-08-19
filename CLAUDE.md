@@ -88,9 +88,10 @@ surya_sync/
 - Tank constraints (`V_critical ≤ V_k ≤ V_max`) are **hard constraints**,
   never soft penalty terms.
 - Safety layer runs **before** the scheduler, in this exact priority:
-  electrical safety > pump protection > overflow protection > sensor
-  validity > critical water availability > manual override > equipment
-  constraints > MPC scheduling > solar utilization > grid optimization.
+  electrical safety > actuator protection (pump) > overflow protection >
+  sensor validity > critical service availability (water) > manual
+  override > equipment constraints > MPC scheduling > solar utilization >
+  grid optimization.
 - Fallback chain must always exist: Risk-Aware MPC → Predictive Heuristic →
   Reactive Solar Scheduler → Conventional Threshold Controller → ESP32
   local safe mode / manual. The household must keep functioning if the
@@ -143,14 +144,25 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 0 complete, merged to main and pushed. Phase 1 deliberately NOT
-started — held pending review of PHASE0_REVIEW.md section 4.`
+`Phase: 0 complete, reviewed and pushed. Interface changes from the review
+are in. Phase 1 (simulator) is cleared to start.`
 
-Open before Phase 1 begins:
-- Work the `PHASE0_REVIEW.md` section 4 checklist. The two items that get
-  locked in by Phase 1 are the `SchedulingRequest` field set and the
-  `service_level` normalization seam — both are near-free to change while
-  only interfaces exist, and expensive afterwards.
+Carried out of the Phase 0 review (`PHASE0_REVIEW.md` section 5):
+- `admissible_actions(observation, history, now)` takes an
+  `ActuationHistory`. A `None` history means *unknown*, and every
+  time-based equipment constraint must then read as unsatisfied — hold the
+  actuator rather than assume the cooldown elapsed.
+- Schedulers read state **only** from the request. Calling
+  `request.resource.observe()` is a contract violation; `resource` is for
+  physics (`predict_trajectory`, `constraints`, `admissible_actions`).
+- No `FALLBACK_ENGAGED` reason code. Falling back is not a rationale —
+  keep the substantive reason and set `SchedulingPlan.fallback_engaged`.
+- `ReasonCode` and `SolverStatus` are `CHECK`-constrained in
+  `scheduler_decisions`. Adding a code means editing the schema too;
+  tests compare the two and fail on drift.
+- Known limit, accepted: `ResourceConstraints` has no `deadline` or
+  `interruptible`. The tank does not need them. Phase 16 adds them as
+  optional fields if a second resource type is ever built.
 
 Landed in Phase 0:
 - `Scheduler` / `FlexibleResource` interfaces (`scheduler/base.py`,

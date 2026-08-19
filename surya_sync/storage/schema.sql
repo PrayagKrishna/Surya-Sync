@@ -223,9 +223,24 @@ CREATE TABLE IF NOT EXISTS scheduler_decisions (
 
     first_action      TEXT    NOT NULL
         CHECK (first_action IN ('RUN', 'WAIT', 'STOP')),
-    reason_code       TEXT    NOT NULL,
+
+    -- ReasonCode is a closed vocabulary, so the database enforces it too.
+    -- Keep in lockstep with scheduler.base.ReasonCode; adding a code means
+    -- a schema version bump, which is the intended friction.
+    reason_code       TEXT    NOT NULL
+        CHECK (reason_code IN (
+            'critical_level', 'solar_surplus_available', 'optimal_window_now',
+            'no_better_window_ahead', 'must_run_deadline', 'sufficient_level',
+            'awaiting_solar', 'demand_low', 'equipment_cooldown',
+            'target_reached', 'solar_surplus_ended', 'safety_override',
+            'manual_override', 'sensor_invalid', 'anomaly_detected'
+        )),
     objective_value   REAL,             -- NULL for rule-based schedulers
-    solver_status     TEXT    NOT NULL,
+    solver_status     TEXT    NOT NULL
+        CHECK (solver_status IN (
+            'not_applicable', 'optimal', 'feasible',
+            'infeasible', 'timeout', 'error'
+        )),
     constraints_satisfied INTEGER NOT NULL,
     constraint_violations TEXT,         -- JSON array, NULL when satisfied
     compute_ms        REAL,             -- Phase 12 budget check

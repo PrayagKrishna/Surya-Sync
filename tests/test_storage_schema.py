@@ -158,3 +158,99 @@ def test_control_action_is_constrained(db):
             "VALUES (1, datetime('now'), 'tank_1', 'threshold', '0.1.0', 4, "
             "'MAYBE', 'sufficient_level', 'not_applicable', 1, '{}', 'simulated')"
         )
+
+
+def _check_clause(db, table: str, column: str) -> str:
+    """The CREATE TABLE text for one table, as SQLite stored it."""
+    row = db.connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    assert row is not None, f"missing table {table}"
+    return row[0]
+
+
+def test_reason_code_vocabulary_matches_the_enum(db):
+    """``ReasonCode`` is documented as a closed vocabulary. If the database
+    accepts a value the enum does not define — or rejects one it does — the
+    two have drifted and the "Why?" screen will meet a code it cannot
+    render."""
+    from surya_sync.scheduler.base import ReasonCode
+
+    sql = _check_clause(db, "scheduler_decisions", "reason_code")
+    for code in ReasonCode:
+        assert f"'{code.value}'" in sql, f"{code.value} missing from DB CHECK"
+
+
+def test_solver_status_vocabulary_matches_the_enum(db):
+    from surya_sync.scheduler.base import SolverStatus
+
+    sql = _check_clause(db, "scheduler_decisions", "solver_status")
+    for status in SolverStatus:
+        assert f"'{status.value}'" in sql, f"{status.value} missing from DB CHECK"
+
+
+def _seed_run(db) -> None:
+    db.connection.execute(
+        "INSERT INTO component_versions (recorded_at, backend_version, "
+        "db_schema_version, serial_protocol_version, water_model_version, "
+        "pv_model_version, config_hash, config_json) "
+        "VALUES (datetime('now'), '0.1.0', 1, '1.0', '0.0.0', '0.0.0', 'h', '{}')"
+    )
+    db.connection.execute(
+        "INSERT INTO runs (id, started_at, mode, component_version_id) "
+        "VALUES (1, datetime('now'), 'simulated', 1)"
+    )
+    db.connection.execute(
+        "INSERT INTO resources (resource_id, resource_type, model_version, "
+        "native_unit, rated_power_kw, service_level_critical, "
+        "service_level_min, service_level_max, created_at) "
+        "VALUES ('tank_1', 'water_tank', '0.0.0', 'L', 0.75, 0.2, 0.3, 0.95, "
+        "datetime('now'))"
+    )
+
+
+def _insert_decision(db, *, reason_code: str, solver_status: str) -> None:
+    db.connection.execute(
+        "INSERT INTO scheduler_decisions (run_id, timestamp, resource_id, "
+        "scheduler_name, algorithm_version, tier, first_action, reason_code, "
+        "solver_status, constraints_satisfied, explanation_json, provenance) "
+        "VALUES (1, datetime('now'), 'tank_1', 'threshold', '0.1.0', 4, "
+        "'WAIT', ?, ?, 1, '{}', 'simulated')",
+        (reason_code, solver_status),
+    )
+
+
+def test_reason_code_is_constrained(db):
+    """A typo'd or invented reason must not reach the decision log."""
+    _seed_run(db)
+    _insert_decision(db, reason_code="sufficient_level", solver_status="not_applicable")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_decision(
+            db, reason_code="because_i_said_so", solver_status="not_applicable"
+        )
+
+
+def test_solver_status_is_constrained(db):
+    _seed_run(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_decision(db, reason_code="sufficient_level", solver_status="probably")
+
+
+def test_fallback_is_recorded_separately_from_the_reason(db):
+    """Falling back is not a rationale. The decision keeps its substantive
+    reason and flags the fallback alongside, so neither is lost."""
+    _seed_run(db)
+    db.connection.execute(
+        "INSERT INTO scheduler_decisions (run_id, timestamp, resource_id, "
+        "scheduler_name, algorithm_version, tier, fallback_engaged, "
+        "first_action, reason_code, solver_status, constraints_satisfied, "
+        "explanation_json, provenance) "
+        "VALUES (1, datetime('now'), 'tank_1', 'threshold', '0.1.0', 4, 1, "
+        "'RUN', 'critical_level', 'not_applicable', 1, '{}', 'simulated')"
+    )
+    row = db.connection.execute(
+        "SELECT fallback_engaged, reason_code FROM scheduler_decisions"
+    ).fetchone()
+    assert row[0] == 1
+    assert row[1] == "critical_level"

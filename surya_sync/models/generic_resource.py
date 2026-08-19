@@ -66,6 +66,57 @@ class ResourceObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class ActuationHistory:
+    """Actuator timing facts that equipment constraints are evaluated against.
+
+    ``ResourceObservation.actuator_on`` says *whether* the actuator is on.
+    It cannot say for how long, nor how many times it has started today, so
+    it cannot answer min-on / min-off / max-starts questions — which are the
+    only questions ``admissible_actions`` exists to answer.
+
+    The history therefore travels with the request instead of living inside
+    the resource, so ``FlexibleResource`` stays stateless with respect to
+    scheduling. ``state/`` owns and writes it; everything else reads it.
+
+    ``None`` timestamps mean *unknown*, not *zero*. Callers must treat an
+    unknown as "the constraint is not yet satisfied" — see
+    ``FlexibleResource.admissible_actions``.
+    """
+
+    resource_id: str
+    actuator_on: bool
+
+    changed_at: datetime | None = None
+    """When the actuator last entered its current state. ``None`` if no
+    transition has been observed yet this run."""
+
+    starts_today: int = 0
+    last_start_at: datetime | None = None
+    provenance: Provenance = Provenance.DERIVED
+
+    def minutes_in_state(self, now: datetime) -> float | None:
+        """How long the actuator has held its current state.
+
+        ``None`` when unknown. A caller must not read ``None`` as a large
+        number — that is exactly the mistake that short-cycles a pump.
+        """
+        if self.changed_at is None:
+            return None
+        return (now - self.changed_at).total_seconds() / 60.0
+
+    @classmethod
+    def unknown(cls, resource_id: str, actuator_on: bool) -> ActuationHistory:
+        """History for a resource whose timing has not been observed yet.
+
+        Every equipment constraint reads as unsatisfied against this, so a
+        scheduler handed one may hold the actuator where it is. That is the
+        intended failure direction: refusing to switch is recoverable, and
+        short-cycling a pump is not.
+        """
+        return cls(resource_id=resource_id, actuator_on=actuator_on)
+
+
+@dataclass(frozen=True, slots=True)
 class ResourceConstraints:
     """Operating limits of a resource.
 
@@ -181,13 +232,23 @@ class FlexibleResource(ABC):
 
     @abstractmethod
     def admissible_actions(
-        self, observation: ResourceObservation, now: datetime
+        self,
+        observation: ResourceObservation,
+        history: ActuationHistory | None,
+        now: datetime,
     ) -> tuple[ControlAction, ...]:
         """Actions permitted by equipment constraints right now.
 
         Enforces min-on / min-off / max-starts. The safety layer and the
         optimizer both consult this; neither may propose an action outside
         the returned set.
+
+        ``history`` supplies the timing these constraints need, because
+        ``observation`` carries only a boolean and cannot express elapsed
+        time or start counts. Pass ``None`` only when the timing is
+        genuinely unknown; an implementation must then treat every
+        time-based constraint as unsatisfied rather than assume it has
+        elapsed. Returning an empty tuple is legal and means "hold".
         """
 
     @abstractmethod

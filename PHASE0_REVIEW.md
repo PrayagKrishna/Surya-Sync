@@ -6,7 +6,8 @@ Prepared 2026-08-17 for review of branch `phase-0-architecture`.
 > section 1 and the branch fast-forwarded onto `main` as `2580cc1` — the
 > hash reviewed here, `5a3c4ce`, no longer exists. Sections 1-3 describe
 > the tree at `2580cc1`, which is byte-identical; only the message changed.
-> Section 4 is still open.
+> Section 4 was worked on 2026-08-19; see section 5 for what changed. The
+> verbatim listings in section 2 predate those changes.
 
 > **Commit message discrepancy — RESOLVED 2026-08-18.** The message read
 > *"architecture, interfaces, tank model, scheduler contract"* — but **there is
@@ -298,9 +299,107 @@ phase quietly weakens an invariant.
 ## 4. Review checklist for tomorrow
 
 - [x] Amend the commit message — it claims a tank model that isn't there
-- [ ] `SchedulingRequest` field set — right inputs, before Phase 2 locks it in
-- [ ] `ReasonCode` closed vocabulary — any rationale missing?
-- [ ] `service_level` normalization as the generalization seam (vs. native units)
-- [ ] Safety priority `IntEnum` ordering matches CLAUDE.md exactly
-- [ ] SQLite schema v1 — 19 tables, provenance `CHECK` constraints
+- [x] `SchedulingRequest` field set — two gaps found and closed, see 5.1 and 5.2
+- [x] `ReasonCode` closed vocabulary — `FALLBACK_ENGAGED` removed, see 5.3
+- [x] `service_level` normalization as the generalization seam — **reviewed and
+      deliberately left as is**, see 5.6
+- [x] Safety priority `IntEnum` ordering matches CLAUDE.md exactly — it does;
+      two rule names generalized, see 5.5
+- [x] SQLite schema v1 — 19 tables and provenance `CHECK`s confirmed; two
+      missing `CHECK`s added, see 5.4
 - [x] Decide whether `phase-0-architecture` fast-forwards onto `main` — yes, done (`2580cc1`)
+
+---
+
+## 5. Review outcome, 2026-08-19
+
+Five findings were acted on and one was declined. Tests went 72 -> 81.
+
+### 5.1 `admissible_actions` could not enforce the constraints it owns
+
+`admissible_actions(observation, now)` is the gate for `min_on_minutes`,
+`min_off_minutes` and `max_starts_per_day`. It could not evaluate any of them:
+`ResourceObservation.actuator_on` is a bare boolean, carrying neither elapsed
+time nor a start count, and `FlexibleResource` is contractually stateless with
+respect to scheduling, so the resource could not hold the history either.
+
+The gap would have surfaced in Phase 1, when `SimulatedTankResource` first has
+to implement the method. It is also the exact boolean-collapse the project's
+actuation rule warns about.
+
+**Closed by** a new `ActuationHistory` in `models/generic_resource.py`
+(`changed_at`, `starts_today`, `last_start_at`, `minutes_in_state()`), threaded
+through `admissible_actions(observation, history, now)` and carried on
+`SchedulingRequest.actuation_history`.
+
+`None` means *unknown*, never *zero*: an implementation must read unknown as
+"constraint not yet satisfied" and hold the actuator. Refusing to switch is
+recoverable; short-cycling a pump is not.
+
+### 5.2 A scheduler could re-read the world mid-decision
+
+`SchedulingRequest.resource` is a live object, so a scheduler could call
+`resource.observe()` and receive a state different from `request.observation`.
+The plan would then be justified against a state that was never acted on, and
+would not be reproducible from its logged inputs. The same field is what stops
+a request being serializable, which `RunMode.REPLAY` depends on.
+
+**Closed by** documenting `resource` as physics-only, stating the prohibition
+in the `Scheduler` contract, and recording that replay rebuilds the resource
+from config plus `observation.resource_id`. The rule cannot be enforced at
+runtime, so a test asserts it stays in the contract docstring.
+
+### 5.3 `FALLBACK_ENGAGED` was a reason code that gave no reason
+
+If the MPC fails and the threshold controller runs because the tank is low, the
+reason is `CRITICAL_LEVEL`. Recording `FALLBACK_ENGAGED` discarded it — and the
+fallback was already recorded twice, by `SchedulingPlan.tier` and by the
+`scheduler_decisions.fallback_engaged` column.
+
+**Closed by** removing the code and adding `SchedulingPlan.fallback_engaged`.
+A decision now carries both what happened and why. The vocabulary is 15 codes:
+5 RUN, 4 WAIT, 2 STOP, 4 override/degraded.
+
+### 5.4 The closed vocabulary was not closed at the database
+
+`first_action` was `CHECK`-constrained but `reason_code` and `solver_status`
+were bare `TEXT`, so the decision log would have accepted any string.
+
+**Closed by** adding both `CHECK` lists, plus tests that compare them against
+`ReasonCode` and `SolverStatus` so the two cannot drift apart.
+
+Schema v1 was edited in place rather than bumped to v2: no deployment exists,
+and the only database held a single `schema_version` row. A migration protects
+real data, and there was none to protect.
+
+### 5.5 Two safety rules were named after water
+
+`PUMP_PROTECTION` and `CRITICAL_WATER_AVAILABILITY` were tank-specific names
+inside the layer that is meant to be resource-agnostic — and it is the layer a
+reviewer reads first.
+
+**Closed by** renaming to `ACTUATOR_PROTECTION` and
+`CRITICAL_SERVICE_AVAILABILITY`, with docstrings naming the tank meaning. The
+priority *ordering* was verified against `CLAUDE.md` and matches exactly; only
+the labels changed.
+
+### 5.6 Declined: no `deadline` or `interruptible` on `ResourceConstraints`
+
+`service_level` normalizes cleanly for the tank but does not carry two things
+other resource types need: a user deadline ("charged by 08:00") and whether a
+run can be interrupted (a wash cycle cannot; a tank fill can).
+
+**Deliberately not added.** The water tank is the actual scope; the other
+resource types exist to keep the interfaces honest, not to be delivered. Adding
+fields nothing implements would cost review attention and buy nothing testable.
+
+Recorded here so it is a known limit rather than an oversight. Both are additive
+fields with safe defaults, so Phase 16 can add them without reshaping anything.
+
+### 5.7 No change: `SchedulingRequest.provenance`
+
+Flagged as a possible category error against `RunMode`. On inspection it is
+correct: `RunMode` has three values, `scheduler_decisions.provenance` accepts
+two, and a replay run has no distinct answer of its own. The field labels where
+the numbers came from, which is what the column stores. Docstring clarified;
+type unchanged.
