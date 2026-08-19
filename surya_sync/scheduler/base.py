@@ -27,6 +27,7 @@ from surya_sync.domain import (
     Provenance,
 )
 from surya_sync.models.generic_resource import (
+    ActuationHistory,
     FlexibilityEstimate,
     FlexibleResource,
     PredictedState,
@@ -121,8 +122,12 @@ class ReasonCode(str, Enum):
     ANOMALY_DETECTED = "anomaly_detected"
     """Behaviour outside learned norms; scheduling turns conservative."""
 
-    FALLBACK_ENGAGED = "fallback_engaged"
-    """A higher tier failed and a lower tier produced this decision."""
+    # There is deliberately no ``FALLBACK_ENGAGED`` code. Falling back is not
+    # a rationale — the lower tier still decided for a substantive reason,
+    # and that reason is what the "Why?" screen must show. The fact of the
+    # fallback is carried by ``SchedulingPlan.fallback_engaged`` and
+    # ``SchedulingPlan.tier``, so a decision records both what happened and
+    # why, instead of losing the why.
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,8 +223,30 @@ class SchedulingRequest:
 
     now: datetime
     horizon: Horizon
+
     resource: FlexibleResource
+    """Physics only — ``constraints``, ``predict_trajectory``,
+    ``estimate_flexibility``, ``admissible_actions``.
+
+    A scheduler must **never** call ``resource.observe()``. The request
+    already carries the observation for this cycle, and a second read would
+    return a different state mid-decision, so the plan would no longer
+    correspond to the state it was justified against.
+
+    This is also the one field that stops a request being serializable, so
+    a replay run reconstructs the resource from ``config`` plus
+    ``observation.resource_id`` and rebuilds the request around it.
+    """
+
     observation: ResourceObservation
+    """The authoritative state for this cycle. The only state a scheduler
+    is allowed to reason from."""
+
+    actuation_history: ActuationHistory | None = None
+    """Actuator timing, for the equipment constraints that ``observation``
+    cannot express. ``None`` means unknown, and forces conservative
+    handling — see ``FlexibleResource.admissible_actions``."""
+
     demand_forecast: Forecast | None = None
     solar_forecast: Forecast | None = None
     base_load_forecast: Forecast | None = None
@@ -233,7 +260,12 @@ class SchedulingRequest:
     margins, not by refusing to decide."""
 
     provenance: Provenance = Provenance.MEASURED
-    """Whether the inputs came from hardware or the simulator."""
+    """Whether the observation came from hardware or the simulator.
+
+    Deliberately ``Provenance`` and not ``RunMode``: this labels where the
+    numbers came from, which is what ``scheduler_decisions.provenance``
+    stores, and a replay run has no distinct answer of its own. Forecasts
+    carry their own provenance and are not covered by this field."""
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -262,6 +294,12 @@ class SchedulingPlan:
     scheduler_name: str
     tier: SchedulerTier
     computed_at: datetime
+
+    fallback_engaged: bool = False
+    """True when a higher tier failed and this plan came from a lower one.
+    Orthogonal to ``explanation.reason_code``, which still carries the
+    substantive reason. Maps to ``scheduler_decisions.fallback_engaged``."""
+
     compute_ms: float | None = None
     """Measured runtime. Phase 12 checks this against the Pi Zero budget."""
 
@@ -274,6 +312,11 @@ class Scheduler(ABC):
     * ``generate_plan`` is pure with respect to system state — it reads a
       request and returns a plan. It does not write to the database, does
       not touch hardware, and does not mutate the resource.
+    * It reads state **only** from the request. Calling
+      ``request.resource.observe()`` is a contract violation: it re-reads
+      the world mid-decision, so the resulting plan is justified against a
+      state that was never the one acted on, and the decision stops being
+      reproducible from its logged inputs.
     * It always returns a ``SchedulingPlan``. Internal failure is
       expressed as ``SolverStatus.ERROR`` with a safe ``first_action``, so
       the fallback chain can react; exceptions are for programmer error.

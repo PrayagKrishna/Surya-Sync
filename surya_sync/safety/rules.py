@@ -26,10 +26,16 @@ class SafetyPriority(IntEnum):
     """
 
     ELECTRICAL_SAFETY = 1
-    PUMP_PROTECTION = 2
+    ACTUATOR_PROTECTION = 2
+    """Pump protection, for the tank. Named for the actuator rather than the
+    pump because this layer must not know which resource it is guarding."""
+
     OVERFLOW_PROTECTION = 3
     SENSOR_VALIDITY = 4
-    CRITICAL_WATER_AVAILABILITY = 5
+    CRITICAL_SERVICE_AVAILABILITY = 5
+    """Critical water availability, for the tank — expressed as service
+    level so the rule generalizes without renaming."""
+
     MANUAL_OVERRIDE = 6
     EQUIPMENT_CONSTRAINTS = 7
     MPC_SCHEDULING = 8

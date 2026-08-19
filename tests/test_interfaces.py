@@ -17,6 +17,7 @@ from surya_sync.domain import ControlAction, Forecast, Horizon, Provenance
 from surya_sync.hardware.esp32_serial import ESP32SerialInterface
 from surya_sync.hardware.interfaces import HardwareInterface
 from surya_sync.models.generic_resource import (
+    ActuationHistory,
     FlexibilityEstimate,
     FlexibleResource,
     ResourceConstraints,
@@ -124,10 +125,10 @@ def test_safety_priority_order_is_the_documented_one():
     make a benchmark look better."""
     assert [p.name for p in sorted(SafetyPriority)] == [
         "ELECTRICAL_SAFETY",
-        "PUMP_PROTECTION",
+        "ACTUATOR_PROTECTION",
         "OVERFLOW_PROTECTION",
         "SENSOR_VALIDITY",
-        "CRITICAL_WATER_AVAILABILITY",
+        "CRITICAL_SERVICE_AVAILABILITY",
         "MANUAL_OVERRIDE",
         "EQUIPMENT_CONSTRAINTS",
         "MPC_SCHEDULING",
@@ -298,7 +299,7 @@ def test_scheduling_request_needs_only_an_observation():
         def rated_power_kw(self):
             return 0.75
 
-        def admissible_actions(self, observation, now):
+        def admissible_actions(self, observation, history, now):
             raise NotImplementedError
 
         def predict_trajectory(self, observation, actions, demand_forecast, step_minutes):
@@ -323,6 +324,7 @@ def test_scheduling_request_needs_only_an_observation():
     )
     assert request.demand_forecast is None
     assert request.anomaly_flagged is False
+    assert request.actuation_history is None
     assert request.horizon.n_steps == 48
 
 
@@ -374,3 +376,48 @@ def test_forecast_is_stamped_as_predicted():
         model_version="0.1.0",
     )
     assert forecast.provenance is Provenance.PREDICTED
+
+
+def test_equipment_constraints_need_more_than_a_boolean():
+    """``observation.actuator_on`` cannot answer min-off or max-starts, so
+    ``admissible_actions`` takes the timing separately. Without this the
+    resource would have to keep scheduling state, which its contract
+    forbids."""
+    params = inspect.signature(FlexibleResource.admissible_actions).parameters
+    assert list(params) == ["self", "observation", "history", "now"]
+
+
+def test_unknown_actuation_timing_is_not_elapsed_time():
+    """The failure direction matters: unknown timing must read as "constraint
+    not yet satisfied", never as a large elapsed time that would let a pump
+    short-cycle."""
+    now = datetime(2026, 8, 17, 9, 0)
+    unknown = ActuationHistory.unknown("tank_1", actuator_on=True)
+
+    assert unknown.minutes_in_state(now) is None
+    assert unknown.starts_today == 0
+    assert unknown.last_start_at is None
+
+    known = ActuationHistory(
+        resource_id="tank_1",
+        actuator_on=True,
+        changed_at=datetime(2026, 8, 17, 8, 45),
+        starts_today=3,
+    )
+    assert known.minutes_in_state(now) == 15.0
+
+
+def test_actuation_history_is_derived_not_measured():
+    """It is computed from the actuation log, not read off a sensor."""
+    history = ActuationHistory.unknown("tank_1", actuator_on=False)
+    assert history.provenance is Provenance.DERIVED
+
+
+def test_schedulers_are_told_not_to_re_read_the_resource():
+    """Gap 2: a second ``observe()`` mid-cycle would justify the plan against
+    a state that was never acted on, and would break replay. The prohibition
+    is unenforceable at runtime, so it lives in the contract docstring — this
+    test stops it being silently deleted."""
+    contract = Scheduler.__doc__ or ""
+    assert "observe()" in contract
+    assert "only" in contract
