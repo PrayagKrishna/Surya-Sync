@@ -176,3 +176,13 @@ Landed in Phase 0:
 - 72 tests, all passing (`.venv/bin/python -m pytest`).
 
 See `ROADMAP.md` for the full phase list and exit criteria.
+
+`docs/PROJECT_JOURNEY.md` is the portfolio-facing development log — what
+actually happened, in what order, and why. **Append an entry at the end of
+every phase, and of every session that produces a commit.** If a session is
+ending without one, say so before it closes. Timeline entries are
+append-only; a reversed decision gets a new entry linking back, never an
+edit. Highlights may be rewritten only after showing the diff and getting
+confirmation. Every claim needs a referent (commit hash, test count, file
+measurement, or an explicit `[simulated]` / `[measured]` tag), and AI
+assistance is recorded per entry, separated from the author's design calls.
