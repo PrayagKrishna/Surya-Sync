@@ -143,8 +143,14 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 0 complete — architecture scaffold, interfaces, config, DB schema.
-Next: Phase 1 (simulator).`
+`Phase: 0 complete, merged to main and pushed. Phase 1 deliberately NOT
+started — held pending review of PHASE0_REVIEW.md section 4.`
+
+Open before Phase 1 begins:
+- Work the `PHASE0_REVIEW.md` section 4 checklist. The two items that get
+  locked in by Phase 1 are the `SchedulingRequest` field set and the
+  `service_level` normalization seam — both are near-free to change while
+  only interfaces exist, and expensive afterwards.
 
 Landed in Phase 0:
 - `Scheduler` / `FlexibleResource` interfaces (`scheduler/base.py`,
