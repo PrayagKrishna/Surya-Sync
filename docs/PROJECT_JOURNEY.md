@@ -318,6 +318,67 @@ gets a new entry that links back to the original.*
     Correct, and cheap at a 48-step horizon, but it has not been
     benchmarked on a Pi Zero; Phase 12 should measure it.
 
+### 2026-09-15 — Phase 1 hardening: five latent bugs — commit `715db70`
+
+Prompted by the question "have you finished debugging Phase 1 thoroughly?"
+The honest answer was no: 262 passing tests written by the same author as the
+code prove the two agree, not that either is right. What follows came from
+probing the code adversarially instead.
+
+- **Built:** no new capability. Five fixes, six regression tests, one rename.
+- **Problems hit — four of the five fail in the optimistic direction:**
+  - `must_run_by` returned `None` for *both* "no deadline within the horizon"
+    and "already too late". **Root cause:** the doomed case fell through the
+    same `latest is None` branch as the unconstrained case. `None` is
+    contractually "unconstrained", so a scheduler would have relaxed at
+    precisely the moment it should run flat out. **Fix:** check
+    unconstrained first; report a deadline of *now* when nothing saves it.
+  - The forecast lookup walked points until the first one in the future,
+    assuming chronological order. **Root cause:** `Forecast` does not promise
+    sorted points, and one rebuilt from the database need not be. A shuffled
+    series returned a demand from the wrong time and raised nothing.
+    **Fix:** scan for the latest point at or before the moment.
+  - A PV forecast handed to `predict_trajectory` was accepted and its kW read
+    as litres per minute. **Root cause:** `Forecast` is a general container;
+    nothing distinguished the series structurally. The output was a
+    trajectory with no negative volumes and no exception — plausible and
+    entirely wrong. **Fix:** `require_demand_forecast` checks `target`.
+  - `DemandProfile.volume_l` and `SolarProfile.energy_kwh` dropped the
+    remainder when the step did not divide the window — 100 minutes stepped
+    by 7 integrated 98 and under-reported demand. **Fix:** refuse the window.
+  - `unit_noise` returned exactly `0.0` forever for any input pair masking to
+    `(0, 0)`. **Root cause:** every stage of the MurmurHash finalizer maps
+    zero to zero. A profile seeded with a multiple of 2**32 would have had no
+    variation while looking healthy. **Fix:** an odd constant in the mix.
+- **Key decisions:**
+  - `IntermittentProfile.clear_sky` renamed to `.base`. The cloudy scenario
+    layers it over an `OvercastProfile`, so the old name described the single
+    case it was not.
+  - Uneven integration windows refused rather than rounded. Rejected
+    alternative: round up. Truncation and rounding are both silent; the
+    project's stated rule is that the optimistic direction must be loud.
+- **Checked and found correct, no change:** polar latitudes (the `asin`
+  clamp yields polar night rather than a domain error), overlapping demand
+  spikes (they stack, as intended), `STOP` on an already-idle pump (no
+  spurious transition recorded), a tank starting exactly full (spill flagged),
+  the daily start budget across midnight, and PV far exceeding all load.
+- **Results:** 269 tests passing, up from 262. No behaviour change to the
+  scenario trajectories — the five defects were all on paths the existing
+  tests did not reach.
+- **AI assistance:** The probing, the diagnosis and the fixes were Claude
+  Code's, in response to the author's challenge to the completeness of the
+  original Phase 1 sign-off. The challenge is what produced them; the
+  preceding commit had been reported as done.
+- **Open questions carried forward:**
+  - `Scenario.n_steps` truncates when the step does not divide the run, so
+    two controllers benchmarked at different step sizes cover slightly
+    different durations. Phase 14 must fix the step across a comparison or
+    normalize per-minute before reporting.
+  - `flexibility_minutes` reports the horizon length when no floor is
+    breached within it. That is a *lower bound* presented as a value, and
+    `FlexibilityEstimate` has no field saying so. It errs conservative, so it
+    is recorded rather than fixed.
+
 ---
 
 ## Maintaining this file
