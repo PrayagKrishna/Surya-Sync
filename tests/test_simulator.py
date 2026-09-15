@@ -390,6 +390,23 @@ def test_an_empty_forecast_is_refused_rather_than_read_as_zero_demand(config):
         resource.predict_trajectory(resource.observe(), (ControlAction.WAIT,), empty, STEP)
 
 
+def test_a_solar_forecast_is_refused_where_demand_is_expected(config):
+    """Regression. ``Forecast`` is a general container, so a PV series is
+    structurally indistinguishable from a demand one. Passed to the tank it
+    was read as litres per minute and produced a trajectory that looked
+    entirely plausible — no exception, no impossible number, just wrong."""
+    resource = SimulatedTankResource(build(config))
+    solar = ClearSkyProfile.from_config(config.solar).as_forecast(START, 8, STEP)
+    assert solar.target == "pv_generation_kw"
+
+    with pytest.raises(ValueError, match="water_demand_lpm"):
+        resource.predict_trajectory(
+            resource.observe(), (ControlAction.WAIT,) * 8, solar, STEP
+        )
+    with pytest.raises(ValueError, match="water_demand_lpm"):
+        resource.estimate_flexibility(resource.observe(), solar)
+
+
 def test_a_non_positive_step_is_rejected(config):
     resource = SimulatedTankResource(build(config))
     forecast = ConstantDemandProfile(lpm=1.0).as_forecast(START, 2, STEP)
@@ -496,6 +513,54 @@ def test_a_draining_tank_has_a_deadline_inside_the_horizon(config):
     estimate = resource.estimate_flexibility(simulator.observe(), forecast)
     assert estimate.must_run_by is not None
     assert START <= estimate.must_run_by <= START + timedelta(minutes=48 * STEP)
+
+
+def test_a_doomed_tank_reports_a_deadline_of_now_not_no_deadline(config):
+    """Regression. ``must_run_by=None`` means *unconstrained*. A tank that
+    cannot be saved even by starting immediately was also reporting ``None``,
+    so a scheduler reading it would relax at exactly the moment it should be
+    running flat out — the optimistic failure this project exists to avoid."""
+    simulator = build(config, demand_lpm=60.0, level=0.205)
+    resource = SimulatedTankResource(simulator)
+    observation = simulator.observe()
+    forecast = ConstantDemandProfile(lpm=60.0).as_forecast(START, 48, STEP)
+
+    estimate = resource.estimate_flexibility(observation, forecast)
+    assert estimate.must_run_by == observation.timestamp
+    assert estimate.time_to_critical_minutes < 48 * STEP
+
+
+def test_the_three_deadline_outcomes_stay_distinguishable(config):
+    def deadline(level: float, lpm: float):
+        simulator = build(config, demand_lpm=lpm, level=level)
+        resource = SimulatedTankResource(simulator)
+        forecast = ConstantDemandProfile(lpm=lpm).as_forecast(START, 48, STEP)
+        return resource.estimate_flexibility(simulator.observe(), forecast).must_run_by
+
+    assert deadline(0.90, 0.0) is None
+    assert deadline(0.40, 10.0) > START
+    assert deadline(0.205, 60.0) == START
+
+
+def test_forecast_lookup_does_not_assume_chronological_points(config):
+    """Regression. ``Forecast`` does not promise sorted points, and one
+    rebuilt from the database need not be. Walking until the first future
+    point returned a demand from the wrong time and failed silently."""
+    shuffled = Forecast(
+        target="water_demand_lpm",
+        issued_at=START,
+        points=(
+            ForecastPoint(target_time=START + timedelta(minutes=30), p50=99.0),
+            ForecastPoint(target_time=START, p50=1.0),
+            ForecastPoint(target_time=START + timedelta(minutes=15), p50=50.0),
+        ),
+        model_name="test",
+        model_version="0",
+    )
+    assert demand_at(shuffled, START) == 1.0
+    assert demand_at(shuffled, START + timedelta(minutes=15)) == 50.0
+    assert demand_at(shuffled, START + timedelta(minutes=30)) == 99.0
+    assert demand_at(shuffled, START - timedelta(minutes=5)) == 1.0
 
 
 def test_a_heavier_forecast_shortens_the_flexibility(config):

@@ -52,13 +52,21 @@ class DemandProfile(ABC):
     def volume_l(self, start: datetime, minutes: float, step_minutes: float = 1.0) -> float:
         """Integrate the draw over a window, left-endpoint rule.
 
-        ``step_minutes`` must divide the window the same way the simulator
-        steps it, or the total will not match the trajectory it produced.
+        ``step_minutes`` must divide the window evenly, and must be the step
+        the simulator used, or the total will not match the trajectory it
+        produced. A window that does not divide is rejected rather than
+        silently truncated: dropping the remainder *under*-counts demand,
+        which is the optimistic direction and the one that hides a problem.
         """
         if minutes < 0.0 or step_minutes <= 0.0:
             raise ValueError("minutes must be >= 0 and step_minutes > 0")
+        steps = round(minutes / step_minutes)
+        if abs(steps * step_minutes - minutes) > 1e-9:
+            raise ValueError(
+                f"step_minutes={step_minutes} does not divide minutes={minutes} evenly; "
+                "truncating would under-count demand"
+            )
         total = 0.0
-        steps = int(round(minutes / step_minutes))
         for index in range(steps):
             moment = start + timedelta(minutes=index * step_minutes)
             total += self.lpm_at(moment) * step_minutes
