@@ -5,11 +5,12 @@ Development log. Records what happened, in what order, and why.
 Distinct from `CLAUDE.md` (session context for the next working session) and
 `ROADMAP.md` (forward plan). This file is backward-looking only.
 
-**Standing status caveat.** As of `2504c2f` the system has run **zero** physical
-hardware trials and contains **zero** physical models. Every number below is a
-test count, a commit, or a file measurement. Nothing here is a control result,
-a simulation result, or a hardware result, because none exist yet. Where that
-changes, entries will carry an explicit `[simulated]` or `[measured]` tag.
+**Standing status caveat.** As of `5873f7b` the system has run **zero** physical
+hardware trials. Physical *models* now exist (`5873f7b`), so trajectories can be
+produced, but they are simulated and are tagged `[simulated]` wherever they
+appear. No number in this file is a measured hardware result, and none will be
+until Phase 13. Every other figure is a test count, a commit, or a file
+measurement.
 
 ---
 
@@ -222,6 +223,100 @@ gets a new entry that links back to the original.*
   coverage off 0. `ROADMAP.md` Phase 1 exit criteria already require
   deterministic multi-day trajectories plus tank-conversion, physical-model and
   pump-model unit tests.
+
+### 2026-09-15 — Phase 1: Simulator and physical models — commit `5873f7b`
+
+- **Built:** 1,749 lines across `models/tank.py` (geometry + mass balance),
+  `models/pump.py` (flow, energy, the cycling gate), `simulator/tank.py`
+  (`TankSimulator` + `SimulatedTankResource`), `simulator/demand.py`,
+  `simulator/solar.py`, `simulator/grid.py` (base load + energy attribution),
+  `simulator/noise.py`, `simulator/scenarios.py`. Four test modules added.
+  Still zero third-party runtime dependencies.
+- **Key decisions:**
+  - **Physics lives in `models/`, not in the simulator.**
+    `predict_trajectory` and `TankSimulator.advance` both call
+    `TankModel.step`, and a test asserts the two agree to floating point.
+    Rationale: if the optimizer could search a world other than the one it
+    is scored in, the divergence would surface as "the scheduler is bad"
+    rather than as the modelling bug it is. Rejected alternative: a fast
+    approximate model for the optimizer and an accurate one for the
+    simulator — the standard reason MPC results fail to reproduce.
+  - **Profiles are pure functions of time, not seeded random streams.** A
+    `random.Random` stream's output depends on how many times it has been
+    called, so querying out of order changes the answer; MPC re-queries the
+    same future instant across replans and replay re-queries the series out
+    of order. `simulator/noise.py` uses an integer hash instead.
+  - **Grid attribution is marginal: the pump may claim only the surplus PV
+    left after the base household load.** The fridge's consumption is not
+    the scheduler's achievement. Rejected alternative: split PV pro rata
+    across all loads, which would have let a scheduler book a solar win for
+    running at night against a house that was importing anyway.
+  - Overflow and unmet demand are reported as `spilled_l` /
+    `unmet_demand_l` rather than absorbed by clamping the volume. Clamping
+    alone would render a failing trajectory as one that merely stopped
+    changing.
+  - `min_level` is excluded from the hard-constraint check; only
+    `critical_level`, `max_level` and spill count. A plan dipping below its
+    planning floor went wrong, but the household did not lose service.
+    Conflating them would make every cautious scheduler look unsafe.
+  - Clear-sky output uses real solar geometry (Cooper's declination, solar
+    altitude) rather than a fixed bell curve, so day length varies with
+    season and `latitude` / `longitude` become live config rather than
+    decoration. Explicitly **not** an irradiance model: no atmosphere, no
+    diffuse component, no temperature derating. Phase 6 forecasts against
+    real generation.
+  - `DEFAULT_START` moved to a Monday so a multi-day comparison is not
+    perturbed by weekend demand scaling landing on different days.
+- **Problems hit:**
+  - **A cold start deadlocks the pump.** First end-to-end run: 288 steps,
+    pump never once started, 817.5 L `[simulated]` of demand unmet.
+    **Root cause:** `admissible_actions` treats unknown actuator timing as
+    "constraint not satisfied" (the rule carried out of the Phase 0 review),
+    `changed_at` is only written by a transition, and the unknown forbids
+    the only transition that would write it. **Fix in the simulator:** a
+    simulated world provably begins at `clock`, so `changed_at` is seeded
+    there; `TankSimulator(cold_start=True)` exercises the genuine unknown.
+    **Not fixed generally, and recorded as carried forward:** on real
+    hardware `state/` must seed the timestamp from the actuation log or
+    from boot time, or a Pi that boots with no log never starts the pump.
+    The contract was right; the initialisation was missing.
+  - **A 15-minute control step cannot hold the target band.** At 30 lpm the
+    pump fills the 1000 L tank in 33 minutes, so one
+    `scheduler.step_minutes` moves the level 45 percentage points; the
+    naive driver overshot to 0.891 against a 0.80 stop threshold and spilled
+    991.7 L `[simulated]`. **Root cause:** control resolution, not the
+    physics — at a 1-minute step the same driver spills nothing and peaks at
+    0.80. **Not fixed:** Phase 2's controller must predict the fill and stop
+    early. Recorded as a test so the cause is not later mistaken for a
+    model bug.
+  - Two of the first test failures were the test's arithmetic, not the
+    model's: a daily-volume assertion landed on a Sunday and silently
+    collected the 1.15 weekend scale, and two step assertions asked for
+    volumes above the tank's capacity. Both were rewritten to state the day
+    type and stay inside the tank.
+- **Results `[simulated]`:** 262 tests passing, up from 81. Per file:
+  `test_config.py` 25, `test_interfaces.py` 35, `test_state.py` 6,
+  `test_storage_schema.py` 15, `test_tank_model.py` 39,
+  `test_pump_model.py` 31, `test_profiles.py` 53, `test_simulator.py` 58.
+  **Physical-model tests: 181, up from 0** — the open question carried out
+  of `2504c2f` is closed. `SimulatedTankResource` runs all four standard
+  scenarios over three simulated days; a three-day trajectory reproduces
+  exactly on re-run, and no scenario leaves demand unmet at a 5-minute step.
+- **AI assistance:** Design and implementation AI-assisted (Claude Code;
+  commit carries a `Co-Authored-By: Claude Opus 5` trailer). The two
+  findings above were surfaced by running the simulator rather than by
+  inspection. The decisions to keep the physics in one place, to make
+  profiles pure in time, and to attribute solar marginally were taken
+  during implementation and are recorded here with their rejected
+  alternatives; they were not pre-specified in `63c0fda`.
+- **Open questions carried forward:**
+  - Phase 2 must supply a controller that predicts fill rather than
+    reacting to a threshold, or decide that `scheduler.step_minutes` is
+    wrong for this hardware. Do not resolve it by changing the physics.
+  - Phase 11's `state/` owes a `changed_at` at boot.
+  - `estimate_flexibility` currently scans O(n²) to find `must_run_by`.
+    Correct, and cheap at a 48-step horizon, but it has not been
+    benchmarked on a Pi Zero; Phase 12 should measure it.
 
 ---
 
