@@ -38,10 +38,20 @@ class SolarProfile(ABC):
         """AC power delivered by the array at ``when``, in kW."""
 
     def energy_kwh(self, start: datetime, minutes: float, step_minutes: float = 1.0) -> float:
+        """Integrate generation over a window, left-endpoint rule.
+
+        Rejects a window the step does not divide evenly rather than
+        truncating it, for the same reason the demand integral does:
+        dropping the remainder quietly changes the answer.
+        """
         if minutes < 0.0 or step_minutes <= 0.0:
             raise ValueError("minutes must be >= 0 and step_minutes > 0")
+        steps = round(minutes / step_minutes)
+        if abs(steps * step_minutes - minutes) > 1e-9:
+            raise ValueError(
+                f"step_minutes={step_minutes} does not divide minutes={minutes} evenly"
+            )
         total = 0.0
-        steps = int(round(minutes / step_minutes))
         for index in range(steps):
             moment = start + timedelta(minutes=index * step_minutes)
             total += self.kw_at(moment) * step_minutes / 60.0
@@ -177,7 +187,11 @@ class IntermittentProfile(SolarProfile):
     aware scheduler waits for a window that holds.
     """
 
-    clear_sky: ClearSkyProfile
+    base: SolarProfile
+    """The unclouded reference. Typically a ``ClearSkyProfile``, but any
+    profile works — the cloudy scenario layers this over an
+    ``OvercastProfile`` — so it is deliberately not named ``clear_sky``."""
+
     seed: int = 20260915
     slot_minutes: float = 20.0
     min_factor: float = 0.15
@@ -196,4 +210,4 @@ class IntermittentProfile(SolarProfile):
         return self.min_factor + span * unit_noise(self.seed, slot)
 
     def kw_at(self, when: datetime) -> float:
-        return self.clear_sky.kw_at(when) * self.cloud_factor_at(when)
+        return self.base.kw_at(when) * self.cloud_factor_at(when)

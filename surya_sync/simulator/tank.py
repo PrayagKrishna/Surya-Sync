@@ -54,6 +54,15 @@ from surya_sync.simulator.solar import SolarProfile
 DEFAULT_STEP_MINUTES = 15.0
 """Used only where a step cannot be inferred from a forecast's spacing."""
 
+WATER_DEMAND_TARGET = "water_demand_lpm"
+"""The only forecast target the tank's physics can consume.
+
+``Forecast`` is a general container, so a PV forecast is structurally
+indistinguishable from a demand one. Handed the wrong series the tank would
+read kW as litres per minute and produce a trajectory that looks entirely
+plausible — see ``require_demand_forecast``.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class SimulationStep:
@@ -340,6 +349,7 @@ class SimulatedTankResource(FlexibleResource):
         """
         if step_minutes <= 0.0:
             raise ValueError("step_minutes must be > 0")
+        require_demand_forecast(demand_forecast)
 
         tank = self._simulator.tank
         pump = self._simulator.pump
@@ -391,6 +401,8 @@ class SimulatedTankResource(FlexibleResource):
         scan — rather than simply reporting when the level hits the floor —
         is what makes the number correct when demand outpaces the pump.
         """
+        require_demand_forecast(demand_forecast)
+
         tank = self._simulator.tank
         pump = self._simulator.pump
         constraints = self._simulator.constraints
@@ -474,6 +486,22 @@ def violates_hard_constraint(
     )
 
 
+def require_demand_forecast(forecast: Forecast) -> None:
+    """Reject a forecast that is not water demand.
+
+    The units are the whole point: a PV forecast carries kW, and nothing in
+    the type system stops it being passed where litres per minute are
+    expected. The resulting trajectory is wrong but entirely plausible —
+    no negative volumes, no exceptions, just a tank draining at the wrong
+    rate — which is the hardest kind of error to notice.
+    """
+    if forecast.target != WATER_DEMAND_TARGET:
+        raise ValueError(
+            f"expected a {WATER_DEMAND_TARGET!r} forecast, got {forecast.target!r}; "
+            "the tank reads these values as litres per minute"
+        )
+
+
 def demand_at(forecast: Forecast, moment: datetime) -> float:
     """The forecast's expected (``p50``) value covering ``moment``.
 
@@ -492,17 +520,33 @@ def conservative_demand_at(forecast: Forecast, moment: datetime) -> float:
 
 
 def _lookup(forecast: Forecast, moment: datetime, conservative: bool) -> float:
+    """Pick the governing point without assuming the series is sorted.
+
+    A ``Forecast`` does not promise chronological points, and one rebuilt
+    from the database or assembled by hand need not be. Scanning for the
+    latest point at or before ``moment`` — rather than walking until the
+    first point in the future — costs nothing at horizon lengths and
+    removes an assumption that would otherwise fail silently, returning a
+    demand from the wrong time.
+    """
     if not forecast.points:
         raise ValueError(
             f"forecast {forecast.target!r} has no points — refusing to assume "
             "zero demand, which would make every trajectory look safe"
         )
-    chosen = forecast.points[0]
+
+    earliest = forecast.points[0]
+    chosen: ForecastPoint | None = None
     for point in forecast.points:
-        if point.target_time <= moment:
+        if point.target_time < earliest.target_time:
+            earliest = point
+        if point.target_time <= moment and (
+            chosen is None or point.target_time > chosen.target_time
+        ):
             chosen = point
-        else:
-            break
+
+    if chosen is None:
+        chosen = earliest
     if conservative and chosen.p90 is not None:
         return chosen.p90
     return chosen.p50
@@ -550,18 +594,40 @@ def _latest_safe_start(
 ) -> datetime | None:
     """Last step at which starting the pump still avoids the hard floor.
 
-    ``None`` means unconstrained within the horizon: the level never
-    approaches ``critical``, so there is no deadline to report.
-    """
-    n_steps = len(demands)
-    latest: datetime | None = None
+    Three outcomes, and they must stay distinguishable:
 
-    for start_index in range(n_steps):
+    ``None``
+        Unconstrained. Idling through the whole horizon never approaches
+        ``critical``, so there is no deadline to report.
+    a time in the future
+        The genuine deadline.
+    ``observation.timestamp``
+        Already too late — not even starting immediately holds the level
+        above ``critical``. Reporting ``None`` here would read as "no
+        deadline" and invite a scheduler to keep deferring at exactly the
+        moment it should be running flat out, so the doomed case is
+        reported as a deadline of *now* instead.
+    """
+    unconstrained = (
+        _minutes_until_below(
+            tank,
+            observation.native_value,
+            demands,
+            step_minutes,
+            constraints.service_level_critical,
+            pump_lpm=0.0,
+        )
+        is None
+    )
+    if unconstrained:
+        return None
+
+    latest: datetime | None = None
+    for start_index in range(len(demands)):
         volume = observation.native_value
         safe = True
         for index, demand_lpm in enumerate(demands):
-            running = index >= start_index
-            inflow = pump.flow_rate_lpm if running else 0.0
+            inflow = pump.flow_rate_lpm if index >= start_index else 0.0
             volume = tank.step(volume, inflow, demand_lpm, step_minutes).volume_l
             if tank.service_level_from_volume_l(volume) < constraints.service_level_critical:
                 safe = False
@@ -569,17 +635,4 @@ def _latest_safe_start(
         if safe:
             latest = observation.timestamp + timedelta(minutes=start_index * step_minutes)
 
-    if latest is None:
-        return None
-
-    never_runs_safely = _minutes_until_below(
-        tank,
-        observation.native_value,
-        demands,
-        step_minutes,
-        constraints.service_level_critical,
-        pump_lpm=0.0,
-    )
-    if never_runs_safely is None:
-        return None
-    return latest
+    return latest if latest is not None else observation.timestamp

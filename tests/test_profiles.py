@@ -52,6 +52,16 @@ def test_noise_stays_in_the_unit_interval():
     assert all(0.0 <= value < 1.0 for value in values)
 
 
+def test_noise_does_not_collapse_to_zero():
+    """Regression. Every stage of the MurmurHash finalizer maps zero to
+    zero, so an input pair masking to (0, 0) — any multiple of 2**32 —
+    returned exactly 0.0 forever, and a profile seeded that way would have
+    had no variation at all while looking perfectly healthy."""
+    assert unit_noise(0, 0) != 0.0
+    assert unit_noise(2**32, 2**32) != 0.0
+    assert unit_noise(2**40, 0) != 0.0
+
+
 def test_noise_is_not_a_constant():
     values = {unit_noise(1, index) for index in range(500)}
     assert len(values) > 400
@@ -107,6 +117,16 @@ def test_a_weekend_day_integrates_to_the_scaled_volume():
     assert sunday.weekday() == 6
     total = profile.volume_l(sunday, minutes=1440.0, step_minutes=1.0)
     assert total == pytest.approx(450.0 * 1.15, rel=1e-6)
+
+
+def test_an_uneven_integration_window_is_refused():
+    """Regression. ``int(round(minutes / step))`` silently dropped the
+    remainder, so a 100-minute window stepped by 7 integrated only 98
+    minutes and under-reported demand — the optimistic direction."""
+    profile = DiurnalDemandProfile(daily_volume_l=450.0)
+    with pytest.raises(ValueError, match="does not divide"):
+        profile.volume_l(MIDNIGHT, minutes=100.0, step_minutes=7.0)
+    assert profile.volume_l(MIDNIGHT, minutes=105.0, step_minutes=7.0) > 0.0
 
 
 def test_demand_is_pure_in_time():
@@ -263,7 +283,7 @@ def test_overcast_scales_by_exactly_the_cloud_factor(clear_sky):
 def test_intermittent_cloud_is_reproducible(clear_sky):
     """Queried forwards and backwards, the same instants give the same
     values — which a call-ordered random stream would not."""
-    profile = IntermittentProfile(clear_sky=clear_sky, seed=42)
+    profile = IntermittentProfile(base=clear_sky, seed=42)
     moments = [NOON + timedelta(minutes=k) for k in range(300)]
     forward = [profile.kw_at(m) for m in moments]
     backward = [profile.kw_at(m) for m in reversed(moments)]
@@ -271,7 +291,7 @@ def test_intermittent_cloud_is_reproducible(clear_sky):
 
 
 def test_intermittent_cloud_actually_varies(clear_sky):
-    profile = IntermittentProfile(clear_sky=clear_sky, seed=42, slot_minutes=20.0)
+    profile = IntermittentProfile(base=clear_sky, seed=42, slot_minutes=20.0)
     factors = {
         round(profile.cloud_factor_at(NOON + timedelta(minutes=20 * k)), 6)
         for k in range(12)
@@ -281,7 +301,7 @@ def test_intermittent_cloud_actually_varies(clear_sky):
 
 def test_intermittent_cloud_stays_within_its_bounds(clear_sky):
     profile = IntermittentProfile(
-        clear_sky=clear_sky, seed=42, min_factor=0.15, max_factor=0.9
+        base=clear_sky, seed=42, min_factor=0.15, max_factor=0.9
     )
     for k in range(0, 2000, 3):
         factor = profile.cloud_factor_at(MIDNIGHT + timedelta(minutes=k))
@@ -291,6 +311,11 @@ def test_intermittent_cloud_stays_within_its_bounds(clear_sky):
 def test_solar_energy_integrates_over_a_day(clear_sky):
     energy = clear_sky.energy_kwh(MIDNIGHT, minutes=1440.0, step_minutes=5.0)
     assert 0.0 < energy < clear_sky.pv_capacity_kw * 24.0
+
+
+def test_solar_integration_refuses_an_uneven_window(clear_sky):
+    with pytest.raises(ValueError, match="does not divide"):
+        clear_sky.energy_kwh(MIDNIGHT, minutes=100.0, step_minutes=7.0)
 
 
 # --- grid ---------------------------------------------------------------

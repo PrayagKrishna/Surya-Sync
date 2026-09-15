@@ -14,6 +14,8 @@ process, on any platform — it uses only fixed-width integer arithmetic.
 from __future__ import annotations
 
 _MASK = 0xFFFFFFFF
+_ODD = 0x27D4EB2F
+"""Breaks the finalizer's fixed point at zero. See ``unit_noise``."""
 
 
 def unit_noise(seed: int, index: int) -> float:
@@ -22,8 +24,15 @@ def unit_noise(seed: int, index: int) -> float:
     Mixing is the MurmurHash3 finalizer, which is cheap and spreads
     neighbouring indices well enough that consecutive time slots do not
     correlate.
+
+    The ``_ODD`` term matters: every stage of the finalizer maps zero to
+    zero, so without it any input pair that masks to ``(0, 0)`` — a seed or
+    index that is a multiple of 2**32 — would return exactly 0.0 forever,
+    and a profile seeded that way would silently have no variation at all.
     """
-    value = ((seed & _MASK) * 0x9E3779B1 ^ (index & _MASK) * 0x85EBCA6B) & _MASK
+    value = (
+        (seed & _MASK) * 0x9E3779B1 ^ (index & _MASK) * 0x85EBCA6B ^ _ODD
+    ) & _MASK
     value ^= value >> 16
     value = (value * 0x85EBCA6B) & _MASK
     value ^= value >> 13

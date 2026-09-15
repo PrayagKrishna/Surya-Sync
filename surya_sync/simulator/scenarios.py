@@ -129,7 +129,7 @@ def cloudy(config: Config, days: float = 3.0) -> Scenario:
         "and intermittent, which punishes purely reactive control.",
         demand_profile=_household_demand(),
         solar_profile=IntermittentProfile(
-            clear_sky=OvercastProfile(clear_sky=_clear_sky(config), cloud_factor=0.45),
+            base=OvercastProfile(clear_sky=_clear_sky(config), cloud_factor=0.45),
             seed=DEFAULT_SEED,
         ),
         base_load_profile=DiurnalBaseLoadProfile(),
