@@ -140,3 +140,53 @@ class Forecast:
     model_name: str
     model_version: str
     provenance: Provenance = Provenance.PREDICTED
+
+
+DEFAULT_FORECAST_STEP_MINUTES = 15.0
+"""Used only where a step cannot be inferred from a forecast's spacing."""
+
+
+def forecast_value_at(
+    forecast: Forecast, moment: datetime, conservative: bool = False
+) -> float:
+    """The forecast value governing ``moment``, by zero-order hold.
+
+    Each point governs until the next one starts, and the earliest point
+    governs anything before it. ``conservative`` takes ``p90`` where a band
+    exists — plan for more demand, not less.
+
+    Deliberately does not assume the points are in chronological order.
+    ``Forecast`` makes no such promise, and one rebuilt from the database
+    need not be; walking until the first point in the future would return a
+    value from the wrong time and raise nothing.
+    """
+    if not forecast.points:
+        raise ValueError(
+            f"forecast {forecast.target!r} has no points — refusing to assume "
+            "a zero value, which would make every trajectory look safe"
+        )
+
+    earliest = forecast.points[0]
+    chosen: ForecastPoint | None = None
+    for point in forecast.points:
+        if point.target_time < earliest.target_time:
+            earliest = point
+        if point.target_time <= moment and (
+            chosen is None or point.target_time > chosen.target_time
+        ):
+            chosen = point
+
+    if chosen is None:
+        chosen = earliest
+    if conservative and chosen.p90 is not None:
+        return chosen.p90
+    return chosen.p50
+
+
+def forecast_step_minutes(forecast: Forecast) -> float:
+    """Spacing between forecast points, or the default if it cannot be told."""
+    if len(forecast.points) < 2:
+        return DEFAULT_FORECAST_STEP_MINUTES
+    delta = forecast.points[1].target_time - forecast.points[0].target_time
+    minutes = delta.total_seconds() / 60.0
+    return minutes if minutes > 0.0 else DEFAULT_FORECAST_STEP_MINUTES

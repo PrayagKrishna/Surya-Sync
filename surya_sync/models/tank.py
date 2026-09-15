@@ -21,8 +21,30 @@ this. A tapered tank would need a calibration curve here and nowhere else.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
-from surya_sync.config.schema import TankConfig
+from surya_sync.config.schema import Config, TankConfig
+from surya_sync.domain import (
+    ControlAction,
+    Forecast,
+    Provenance,
+    forecast_value_at,
+)
+from surya_sync.models.generic_resource import (
+    PredictedState,
+    ResourceConstraints,
+    ResourceObservation,
+)
+from surya_sync.models.pump import PumpModel
+
+WATER_DEMAND_TARGET = "water_demand_lpm"
+"""The only forecast target the tank's physics can consume.
+
+``Forecast`` is a general container, so a PV series is structurally
+indistinguishable from a demand one. Handed the wrong series the tank would
+read kW as litres per minute and produce a trajectory that looks entirely
+plausible — see ``require_demand_forecast``.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +213,112 @@ class TankModel:
             spilled_l=spilled,
             unmet_demand_l=unmet,
         )
+
+
+def tank_constraints(config: Config) -> ResourceConstraints:
+    """Build the resource's constraint set from validated config.
+
+    One place, so the simulator, the real resource, the scheduler and the
+    safety layer cannot disagree about where the floors are.
+    """
+    return ResourceConstraints(
+        service_level_critical=config.tank.critical_level,
+        service_level_min=config.tank.min_level,
+        service_level_max=config.tank.max_level,
+        min_on_minutes=config.pump.min_on_minutes,
+        min_off_minutes=config.pump.min_off_minutes,
+        max_starts_per_day=config.pump.max_starts_per_day,
+    )
+
+
+def violates_hard_constraint(
+    service_level: float, constraints: ResourceConstraints, spilled_l: float = 0.0
+) -> bool:
+    """Whether a state is outside the hard band.
+
+    ``service_level_min`` is a *planning* floor and is not checked here —
+    dipping below it is a plan going wrong, not a constraint violation.
+    Overflow counts even though the clamped level reads exactly at the
+    ceiling, because the spill is the evidence.
+    """
+    return (
+        service_level < constraints.service_level_critical
+        or service_level > constraints.service_level_max
+        or spilled_l > 0.0
+    )
+
+
+def require_demand_forecast(forecast: Forecast) -> None:
+    """Reject a forecast that is not water demand.
+
+    The units are the whole point: a PV forecast carries kW, and nothing in
+    the type system stops it being passed where litres per minute are
+    expected. The resulting trajectory is wrong but entirely plausible —
+    no negative volumes, no exceptions, just a tank draining at the wrong
+    rate — which is the hardest kind of error to notice.
+    """
+    if forecast.target != WATER_DEMAND_TARGET:
+        raise ValueError(
+            f"expected a {WATER_DEMAND_TARGET!r} forecast, got {forecast.target!r}; "
+            "the tank reads these values as litres per minute"
+        )
+
+
+def predict_tank_trajectory(
+    tank: TankModel,
+    pump: PumpModel,
+    constraints: ResourceConstraints,
+    observation: ResourceObservation,
+    actions: tuple[ControlAction, ...],
+    demand_forecast: Forecast,
+    step_minutes: float,
+) -> tuple[PredictedState, ...]:
+    """Roll the tank forward under a candidate action sequence.
+
+    A free function rather than a method so that the simulated and the real
+    resource cannot end up with separate copies of it. Both adapters are
+    three lines that call in here, which is what makes "never fork the
+    algorithm" structural instead of a convention.
+
+    Uses the ``p50`` demand band: this answers *what is expected to happen*.
+    Conservative planning is the optimizer's job, expressed by feeding this
+    a ``p90`` forecast, not by biasing the physics.
+
+    The sequence is simulated as given. Inadmissible actions are not
+    filtered out — ``admissible_actions`` is the gate, and silently
+    rewriting a proposed plan would hide an optimizer bug.
+    """
+    if step_minutes <= 0.0:
+        raise ValueError("step_minutes must be > 0")
+    require_demand_forecast(demand_forecast)
+
+    states: list[PredictedState] = []
+    volume = observation.native_value
+    moment = observation.timestamp
+
+    for action in actions:
+        actuator_on = action is ControlAction.RUN
+        demand_lpm = forecast_value_at(demand_forecast, moment)
+        outcome = tank.step(
+            volume, pump.inflow_lpm(actuator_on), demand_lpm, step_minutes
+        )
+        volume = outcome.volume_l
+        moment = moment + timedelta(minutes=step_minutes)
+        level = tank.service_level_from_volume_l(volume)
+        states.append(
+            PredictedState(
+                timestamp=moment,
+                service_level=level,
+                native_value=volume,
+                actuator_on=actuator_on,
+                violates_hard_constraint=violates_hard_constraint(
+                    level, constraints, outcome.spilled_l
+                ),
+                provenance=Provenance.PREDICTED,
+            )
+        )
+
+    return tuple(states)
 
 
 def _clamp(value: float, low: float, high: float) -> float:

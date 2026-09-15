@@ -8,8 +8,10 @@ fixed safety priority order.
 
 from __future__ import annotations
 
+import ast
 import inspect
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -421,3 +423,64 @@ def test_schedulers_are_told_not_to_re_read_the_resource():
     contract = Scheduler.__doc__ or ""
     assert "observe()" in contract
     assert "only" in contract
+
+
+# --- architectural direction --------------------------------------------
+
+REAL_LAYERS = ("models", "scheduler", "safety", "state", "temporal", "ml", "storage")
+"""Packages that will run on the Pi against real hardware."""
+
+
+def _imported_packages(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text())
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+        elif isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+    return modules
+
+
+@pytest.mark.parametrize("layer", REAL_LAYERS)
+def test_production_layers_never_import_the_simulator(layer):
+    """The hard rule is that simulated and real resources run the *exact
+    same* code. That survives only while the shared physics sits in
+    ``models/``: the moment a production layer has to reach into
+    ``simulator/`` for it, the fix someone reaches for is a copy — and the
+    algorithm has forked without anyone deciding to.
+
+    Phase 1 got this wrong at first. The flexibility maths and the
+    trajectory rollout lived in ``simulator/tank.py``, so Phase 11's
+    ``RealTankResource`` would have had to import them from there.
+    """
+    package = Path(__file__).resolve().parent.parent / "surya_sync" / layer
+    if not package.exists():
+        pytest.skip(f"{layer}/ does not exist yet")
+
+    offenders = {
+        source.relative_to(package.parent.parent).as_posix(): sorted(
+            module
+            for module in _imported_packages(source)
+            if module.startswith("surya_sync.simulator")
+        )
+        for source in package.rglob("*.py")
+    }
+    offenders = {path: mods for path, mods in offenders.items() if mods}
+    assert not offenders, f"production code importing the simulator: {offenders}"
+
+
+def test_the_shared_tank_physics_lives_in_models():
+    """Both resource adapters must be able to reach these without touching
+    ``simulator/``. Named explicitly so a later move is a deliberate act."""
+    from surya_sync.models import flexibility, tank
+
+    for name in (
+        "tank_constraints",
+        "violates_hard_constraint",
+        "require_demand_forecast",
+        "predict_tank_trajectory",
+    ):
+        assert callable(getattr(tank, name)), name
+    for name in ("estimate_tank_flexibility", "minutes_until_below", "latest_safe_start"):
+        assert callable(getattr(flexibility, name)), name

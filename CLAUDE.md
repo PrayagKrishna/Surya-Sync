@@ -76,7 +76,8 @@ surya_sync/
 ├── safety/          (rules.py, validator.py)
 ├── storage/         (database.py, repositories.py)
 ├── analytics/       (metrics.py, comparison.py)
-├── simulator/        (tank.py, solar.py, demand.py, scenarios.py)
+├── simulator/        (tank.py, solar.py, demand.py, grid.py, noise.py,
+│                     scenarios.py)
 ├── experiments/      (runner.py, comparison.py, ablation.py)
 ├── api/
 ├── frontend/
@@ -145,7 +146,7 @@ root cause → fix → regression test. No shotgun debugging.
 > knows where things stand.
 
 `Phase: 1 complete and hardened. Simulator, physical models and the standard scenario
-set are in; 269 tests pass. Phase 2 (threshold controller) is cleared to
+set are in; 277 tests pass. Phase 2 (threshold controller) is cleared to
 start.`
 
 Carried out of Phase 1:
@@ -160,10 +161,19 @@ Carried out of Phase 1:
   moves the level 45 points. Phase 2's controller must predict the fill and
   stop early; a purely reactive one overshoots for reasons that are not its
   fault. Do not "fix" this by editing the physics.
-- Scheduler-facing physics lives in `models/tank.py` and `models/pump.py`,
-  not in the simulator. `predict_trajectory` and `TankSimulator.advance`
-  both call `TankModel.step` and a test asserts they agree exactly. Never
-  give the optimizer its own copy of the mass balance.
+- **All shared physics lives in `models/`, never in `simulator/`.**
+  `models/tank.py` holds `predict_tank_trajectory`, `tank_constraints`,
+  `violates_hard_constraint`, `require_demand_forecast`;
+  `models/flexibility.py` holds the flexibility maths; `domain.py` holds
+  `forecast_value_at` / `forecast_step_minutes`. `SimulatedTankResource` is
+  a thin adapter over them and `RealTankResource` will be the same.
+  `tests/test_interfaces.py` fails if any production layer imports
+  `simulator/`, because the moment real code has to reach into the
+  simulator, the fix someone reaches for is a copy — and the algorithm has
+  forked without anyone deciding to.
+- `predict_tank_trajectory` and `TankSimulator.advance` both call
+  `TankModel.step` and a test asserts they agree exactly. Never give the
+  optimizer its own copy of the mass balance.
 - Profiles are **pure functions of time**, never call-ordered random
   streams (`simulator/noise.py`), because MPC re-queries the same instant
   across replans and replay re-queries out of order.

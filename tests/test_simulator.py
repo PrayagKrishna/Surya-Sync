@@ -28,14 +28,17 @@ from surya_sync.simulator import scenarios
 from surya_sync.simulator.demand import ConstantDemandProfile, DiurnalDemandProfile
 from surya_sync.simulator.grid import ConstantBaseLoadProfile, DiurnalBaseLoadProfile
 from surya_sync.simulator.solar import ClearSkyProfile
-from surya_sync.simulator.tank import (
-    SimulatedTankResource,
-    TankSimulator,
-    conservative_demand_at,
-    demand_at,
-    forecast_step_minutes,
-    tank_constraints,
-)
+from surya_sync.domain import forecast_step_minutes, forecast_value_at
+from surya_sync.models.tank import tank_constraints
+from surya_sync.simulator.tank import SimulatedTankResource, TankSimulator
+
+
+def demand_at(forecast, moment):
+    return forecast_value_at(forecast, moment)
+
+
+def conservative_demand_at(forecast, moment):
+    return forecast_value_at(forecast, moment, conservative=True)
 
 START = datetime(2026, 3, 1, 6, 0)
 STEP = 15.0

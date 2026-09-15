@@ -8,15 +8,21 @@ Two classes with distinct jobs:
     mutable thing here.
 
 ``SimulatedTankResource``
-    The ``FlexibleResource`` the scheduler talks to. It holds no scheduling
-    state; it answers questions about physics by delegating to the same
-    ``TankModel`` and ``PumpModel`` the simulator uses.
+    The ``FlexibleResource`` the scheduler talks to. A thin adapter: it
+    holds no scheduling state and no physics of its own, delegating every
+    physical question to ``models/``.
 
-That delegation is the point. ``predict_trajectory`` and
-``TankSimulator.advance`` both call ``TankModel.step``, so the physics the
-optimizer searches over is byte-for-byte the physics it will be judged
-against. The real resource in Phase 11 replaces the simulator underneath
-this same adapter and the scheduling code path does not change.
+That delegation is the point, and it is structural rather than a
+convention. ``predict_trajectory`` calls ``models.tank.predict_tank_trajectory``
+and ``estimate_flexibility`` calls ``models.flexibility``; the real
+resource in Phase 11 will call the same two functions. Nothing physical
+lives in this module that ``RealTankResource`` would have to import from
+``simulator/`` — which is what would eventually get copied instead, and
+how "never fork the algorithm" stops being true.
+
+``TankSimulator.advance`` and ``predict_tank_trajectory`` both reach
+``TankModel.step``, so the physics the optimizer searches over is the
+physics it is judged against. A test asserts they agree exactly.
 
 **The simulator executes what it is told.** It does not re-check
 admissibility or safety. Those gates live in ``safety/`` and run before
@@ -40,8 +46,14 @@ from surya_sync.models.generic_resource import (
     ResourceConstraints,
     ResourceObservation,
 )
+from surya_sync.models.flexibility import estimate_tank_flexibility
 from surya_sync.models.pump import PumpModel
-from surya_sync.models.tank import TankModel
+from surya_sync.models.tank import (
+    TankModel,
+    predict_tank_trajectory,
+    tank_constraints,
+    violates_hard_constraint,
+)
 from surya_sync.simulator.demand import DemandProfile
 from surya_sync.simulator.grid import (
     BaseLoadProfile,
@@ -50,18 +62,6 @@ from surya_sync.simulator.grid import (
     GridModel,
 )
 from surya_sync.simulator.solar import SolarProfile
-
-DEFAULT_STEP_MINUTES = 15.0
-"""Used only where a step cannot be inferred from a forecast's spacing."""
-
-WATER_DEMAND_TARGET = "water_demand_lpm"
-"""The only forecast target the tank's physics can consume.
-
-``Forecast`` is a general container, so a PV forecast is structurally
-indistinguishable from a demand one. Handed the wrong series the tank would
-read kW as litres per minute and produce a trajectory that looks entirely
-plausible — see ``require_demand_forecast``.
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,111 +336,32 @@ class SimulatedTankResource(FlexibleResource):
         demand_forecast: Forecast,
         step_minutes: float,
     ) -> tuple[PredictedState, ...]:
-        """Roll the tank forward under a candidate action sequence.
-
-        Uses the ``p50`` demand band: this answers *what is expected to
-        happen*. Conservative planning is the optimizer's job in Phase 10,
-        expressed by feeding this a ``p90`` forecast, not by biasing the
-        physics here.
-
-        The sequence is simulated as given. Inadmissible actions are not
-        filtered out — ``admissible_actions`` is the gate, and silently
-        rewriting a proposed plan would hide an optimizer bug.
-        """
-        if step_minutes <= 0.0:
-            raise ValueError("step_minutes must be > 0")
-        require_demand_forecast(demand_forecast)
-
-        tank = self._simulator.tank
-        pump = self._simulator.pump
-        constraints = self._simulator.constraints
-
-        states: list[PredictedState] = []
-        volume = observation.native_value
-        moment = observation.timestamp
-
-        for action in actions:
-            actuator_on = action is ControlAction.RUN
-            demand_lpm = demand_at(demand_forecast, moment)
-            outcome = tank.step(
-                volume, pump.inflow_lpm(actuator_on), demand_lpm, step_minutes
-            )
-            volume = outcome.volume_l
-            moment = moment + timedelta(minutes=step_minutes)
-            level = tank.service_level_from_volume_l(volume)
-            states.append(
-                PredictedState(
-                    timestamp=moment,
-                    service_level=level,
-                    native_value=volume,
-                    actuator_on=actuator_on,
-                    violates_hard_constraint=violates_hard_constraint(
-                        level, constraints, outcome.spilled_l
-                    ),
-                    provenance=Provenance.PREDICTED,
-                )
-            )
-
-        return tuple(states)
+        """Delegate to the shared tank physics. See
+        ``models.tank.predict_tank_trajectory`` for the contract."""
+        return predict_tank_trajectory(
+            tank=self._simulator.tank,
+            pump=self._simulator.pump,
+            constraints=self._simulator.constraints,
+            observation=observation,
+            actions=actions,
+            demand_forecast=demand_forecast,
+            step_minutes=step_minutes,
+        )
 
     def estimate_flexibility(
         self,
         observation: ResourceObservation,
         demand_forecast: Forecast,
     ) -> FlexibilityEstimate:
-        """How long the pump can stay off before a floor is breached.
-
-        Conservative by construction: uses ``p90`` demand where the forecast
-        carries a band, so flexibility is understated rather than
-        overstated. Until Phase 10 populates bands this falls back to
-        ``p50``, and the estimate is only as cautious as the forecast is.
-
-        ``must_run_by`` is found by asking, for each step in turn, whether a
-        run starting there would hold the level above ``critical`` for the
-        rest of the horizon. The last step that succeeds is the answer. That
-        scan — rather than simply reporting when the level hits the floor —
-        is what makes the number correct when demand outpaces the pump.
-        """
-        require_demand_forecast(demand_forecast)
-
-        tank = self._simulator.tank
-        pump = self._simulator.pump
-        constraints = self._simulator.constraints
-        step_minutes = forecast_step_minutes(demand_forecast)
-        n_steps = max(1, len(demand_forecast.points))
-
-        demands = [
-            conservative_demand_at(
-                demand_forecast,
-                observation.timestamp + timedelta(minutes=index * step_minutes),
-            )
-            for index in range(n_steps)
-        ]
-
-        flexibility_minutes = _minutes_until_below(
-            tank, observation.native_value, demands, step_minutes,
-            constraints.service_level_min, pump_lpm=0.0,
-        )
-        time_to_critical_minutes = _minutes_until_below(
-            tank, observation.native_value, demands, step_minutes,
-            constraints.service_level_critical, pump_lpm=0.0,
-        )
-
-        horizon_minutes = n_steps * step_minutes
-        if flexibility_minutes is None:
-            flexibility_minutes = horizon_minutes
-        if time_to_critical_minutes is None:
-            time_to_critical_minutes = horizon_minutes
-
-        return FlexibilityEstimate(
-            timestamp=observation.timestamp,
+        """Delegate to the shared flexibility model. See
+        ``models.flexibility.estimate_tank_flexibility`` for the contract."""
+        return estimate_tank_flexibility(
+            tank=self._simulator.tank,
+            pump=self._simulator.pump,
+            constraints=self._simulator.constraints,
+            observation=observation,
+            demand_forecast=demand_forecast,
             resource_id=self.resource_id,
-            flexibility_minutes=flexibility_minutes,
-            time_to_critical_minutes=max(flexibility_minutes, time_to_critical_minutes),
-            must_run_by=_latest_safe_start(
-                tank, pump, observation, demands, step_minutes, constraints
-            ),
-            provenance=Provenance.ESTIMATED,
         )
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
@@ -448,191 +369,3 @@ class SimulatedTankResource(FlexibleResource):
             f"SimulatedTankResource(resource_id={self.resource_id!r}, "
             f"model_version={self.model_version!r})"
         )
-
-
-# --- shared helpers -----------------------------------------------------
-
-
-def tank_constraints(config: Config) -> ResourceConstraints:
-    """Build the resource's constraint set from validated config.
-
-    One place, so the simulator, the scheduler and the safety layer cannot
-    disagree about where the floors are.
-    """
-    return ResourceConstraints(
-        service_level_critical=config.tank.critical_level,
-        service_level_min=config.tank.min_level,
-        service_level_max=config.tank.max_level,
-        min_on_minutes=config.pump.min_on_minutes,
-        min_off_minutes=config.pump.min_off_minutes,
-        max_starts_per_day=config.pump.max_starts_per_day,
-    )
-
-
-def violates_hard_constraint(
-    service_level: float, constraints: ResourceConstraints, spilled_l: float = 0.0
-) -> bool:
-    """Whether a state is outside the hard band.
-
-    ``service_level_min`` is a *planning* floor and is not checked here —
-    dipping below it is a plan going wrong, not a constraint violation.
-    Overflow counts even though the clamped level reads exactly at the
-    ceiling, because the spill is the evidence.
-    """
-    return (
-        service_level < constraints.service_level_critical
-        or service_level > constraints.service_level_max
-        or spilled_l > 0.0
-    )
-
-
-def require_demand_forecast(forecast: Forecast) -> None:
-    """Reject a forecast that is not water demand.
-
-    The units are the whole point: a PV forecast carries kW, and nothing in
-    the type system stops it being passed where litres per minute are
-    expected. The resulting trajectory is wrong but entirely plausible —
-    no negative volumes, no exceptions, just a tank draining at the wrong
-    rate — which is the hardest kind of error to notice.
-    """
-    if forecast.target != WATER_DEMAND_TARGET:
-        raise ValueError(
-            f"expected a {WATER_DEMAND_TARGET!r} forecast, got {forecast.target!r}; "
-            "the tank reads these values as litres per minute"
-        )
-
-
-def demand_at(forecast: Forecast, moment: datetime) -> float:
-    """The forecast's expected (``p50``) value covering ``moment``.
-
-    Zero-order hold: each point governs until the next one starts, and the
-    first point governs anything before it.
-    """
-    return _lookup(forecast, moment, conservative=False)
-
-
-def conservative_demand_at(forecast: Forecast, moment: datetime) -> float:
-    """The ``p90`` value covering ``moment``, falling back to ``p50``.
-
-    Plan for a thirstier household than expected.
-    """
-    return _lookup(forecast, moment, conservative=True)
-
-
-def _lookup(forecast: Forecast, moment: datetime, conservative: bool) -> float:
-    """Pick the governing point without assuming the series is sorted.
-
-    A ``Forecast`` does not promise chronological points, and one rebuilt
-    from the database or assembled by hand need not be. Scanning for the
-    latest point at or before ``moment`` — rather than walking until the
-    first point in the future — costs nothing at horizon lengths and
-    removes an assumption that would otherwise fail silently, returning a
-    demand from the wrong time.
-    """
-    if not forecast.points:
-        raise ValueError(
-            f"forecast {forecast.target!r} has no points — refusing to assume "
-            "zero demand, which would make every trajectory look safe"
-        )
-
-    earliest = forecast.points[0]
-    chosen: ForecastPoint | None = None
-    for point in forecast.points:
-        if point.target_time < earliest.target_time:
-            earliest = point
-        if point.target_time <= moment and (
-            chosen is None or point.target_time > chosen.target_time
-        ):
-            chosen = point
-
-    if chosen is None:
-        chosen = earliest
-    if conservative and chosen.p90 is not None:
-        return chosen.p90
-    return chosen.p50
-
-
-def forecast_step_minutes(forecast: Forecast) -> float:
-    """Spacing between forecast points, or the default if it cannot be told."""
-    if len(forecast.points) < 2:
-        return DEFAULT_STEP_MINUTES
-    delta = forecast.points[1].target_time - forecast.points[0].target_time
-    minutes = delta.total_seconds() / 60.0
-    return minutes if minutes > 0.0 else DEFAULT_STEP_MINUTES
-
-
-def _minutes_until_below(
-    tank: TankModel,
-    volume_l: float,
-    demands: list[float],
-    step_minutes: float,
-    floor_level: float,
-    pump_lpm: float,
-) -> float | None:
-    """Minutes until the level first drops below ``floor_level``.
-
-    ``None`` when it never does within the supplied demand series. The
-    caller decides what to report for that — the honest answer is "at least
-    the horizon", not "infinite".
-    """
-    volume = volume_l
-    for index, demand_lpm in enumerate(demands):
-        outcome = tank.step(volume, pump_lpm, demand_lpm, step_minutes)
-        volume = outcome.volume_l
-        if tank.service_level_from_volume_l(volume) < floor_level:
-            return (index + 1) * step_minutes
-    return None
-
-
-def _latest_safe_start(
-    tank: TankModel,
-    pump: PumpModel,
-    observation: ResourceObservation,
-    demands: list[float],
-    step_minutes: float,
-    constraints: ResourceConstraints,
-) -> datetime | None:
-    """Last step at which starting the pump still avoids the hard floor.
-
-    Three outcomes, and they must stay distinguishable:
-
-    ``None``
-        Unconstrained. Idling through the whole horizon never approaches
-        ``critical``, so there is no deadline to report.
-    a time in the future
-        The genuine deadline.
-    ``observation.timestamp``
-        Already too late — not even starting immediately holds the level
-        above ``critical``. Reporting ``None`` here would read as "no
-        deadline" and invite a scheduler to keep deferring at exactly the
-        moment it should be running flat out, so the doomed case is
-        reported as a deadline of *now* instead.
-    """
-    unconstrained = (
-        _minutes_until_below(
-            tank,
-            observation.native_value,
-            demands,
-            step_minutes,
-            constraints.service_level_critical,
-            pump_lpm=0.0,
-        )
-        is None
-    )
-    if unconstrained:
-        return None
-
-    latest: datetime | None = None
-    for start_index in range(len(demands)):
-        volume = observation.native_value
-        safe = True
-        for index, demand_lpm in enumerate(demands):
-            inflow = pump.flow_rate_lpm if index >= start_index else 0.0
-            volume = tank.step(volume, inflow, demand_lpm, step_minutes).volume_l
-            if tank.service_level_from_volume_l(volume) < constraints.service_level_critical:
-                safe = False
-                break
-        if safe:
-            latest = observation.timestamp + timedelta(minutes=start_index * step_minutes)
-
-    return latest if latest is not None else observation.timestamp
