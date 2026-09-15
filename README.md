@@ -75,10 +75,14 @@ Actively in development, following a 16-phase roadmap (see [`ROADMAP.md`](ROADMA
 | Phase | Description | Status |
 |---|---|---|
 | 0 | Architecture, interfaces, config, DB schema | ✅ Complete |
-| 1 | Simulator (tank, pump, demand, solar) | 🚧 Next |
-| 2 | Conventional threshold control | ⬜ Not started |
+| 1 | Simulator (tank, pump, demand, solar, grid) | ✅ Complete |
+| 2 | Conventional threshold control | 🚧 Next |
 | 3 | Solar-reactive control | ⬜ Not started |
 | 4–16 | Temporal learning → ML → MPC → hardware → frontend | ⬜ Not started |
+
+No scheduling algorithm exists yet — Phase 2 writes the first one. Everything
+through Phase 1 is architecture, physics and the simulated environment those
+schedulers will be compared in.
 
 ## Repository Structure
 
@@ -106,8 +110,10 @@ Results in this repo are explicitly labeled as **Measured**, **Simulated**, **Pr
 
 ## Running Locally
 
-Requires Python 3.11+ (for `tomllib`). Phase 0 has **no third-party runtime
-dependencies** — deliberately, since everything eventually runs on a Pi Zero.
+Requires Python 3.11+ (for `tomllib`). Still **no third-party runtime
+dependencies** as of Phase 1 — deliberately, since everything eventually runs
+on a Pi Zero. ML, solver, serial and API libraries are declared as optional
+extras, gated to the phases that need them.
 
 ```bash
 python3 -m venv .venv
@@ -124,7 +130,54 @@ editing the packaged defaults. Every resolved config is hashed, and the hash is
 recorded with each run so any result traces back to the exact parameters that
 produced it.
 
-*(Simulator quickstart lands with Phase 1.)*
+### Simulator quickstart
+
+Run one of the four standard scenarios over three simulated days. The
+decision rule below is a two-line placeholder, not a scheduler — Phase 2
+writes the first real one. It is here to show the simulator turning, and its
+numbers are **simulated**, not a result.
+
+```python
+from surya_sync.config.schema import Config
+from surya_sync.domain import ControlAction
+from surya_sync.simulator import scenarios
+from surya_sync.simulator.tank import SimulatedTankResource
+
+config = Config()
+scenario = scenarios.sunny(config, days=3)      # or cloudy / spike / low_start
+resource = SimulatedTankResource(scenario.build(config))
+sim = resource.simulator
+
+steps = []
+for _ in range(scenario.n_steps(5.0)):
+    observation = sim.observe()
+    allowed = resource.admissible_actions(
+        observation, sim.actuation_history(), sim.clock
+    )
+    if observation.service_level < 0.45 and ControlAction.RUN in allowed:
+        action = ControlAction.RUN
+    elif observation.service_level > 0.80 and ControlAction.STOP in allowed:
+        action = ControlAction.STOP
+    else:
+        action = ControlAction.RUN if observation.actuator_on else ControlAction.WAIT
+    steps.append(sim.advance(action, 5.0))
+
+grid = sum(s.energy.controllable_grid_kwh for s in steps)
+solar = sum(s.energy.controllable_solar_kwh for s in steps)
+print(f"pump runtime     {sum(s.minutes for s in steps if s.actuator_on):.0f} min")
+print(f"pump energy      {grid + solar:.2f} kWh  (grid {grid:.2f} / solar {solar:.2f})")
+print(f"unmet demand     {sum(s.unmet_demand_l for s in steps):.1f} L")
+print(f"hard violations  {sum(s.violates_hard_constraint for s in steps)}")
+```
+
+Re-running this reproduces the trajectory exactly; the profiles are pure
+functions of time rather than random streams, so experiments replay.
+
+Two things the simulator is built to make visible rather than hide:
+overflow and unserved demand are reported as quantities (`spilled_l`,
+`unmet_demand_l`) instead of being absorbed by clamping the tank volume, and
+the pump is credited only with surplus PV left after the base household load,
+so a scheduler cannot book the fridge's solar as its own.
 
 ## License
 
