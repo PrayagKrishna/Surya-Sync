@@ -432,6 +432,138 @@ misses, one of them structural.
   should confirm `RealTankResource` needs nothing further from `models/`
   than the four tank functions and the three flexibility ones.
 
+### 2026-09-15 — Phase 2: Conventional control and the safety layer — commit `4b14a85`
+
+The first scheduler, and the machinery that is allowed to overrule it.
+Exit criterion met: **0 hard-constraint violations, 0 L spilled, 0 L unmet
+demand** across `sunny` / `cloudy` / `spike` / `low_start` over three
+simulated days `[simulated]`. 379 tests pass, up from 277 at `1fee0ea`.
+
+- **Built:**
+  - `scheduler/threshold.py` — `ThresholdScheduler`, tier 4, Baseline A.
+    Hysteresis on service level (`start = min_level + safety_reserve`) plus
+    a **one-step lookahead** through `predict_trajectory`.
+  - `safety/rules.py` — six concrete rules; `safety/validator.py` —
+    `check_state` (pre-gate) and `validate_action` (post-validation).
+  - `scheduler/base.py` — `FallbackChain.generate_plan`, previously a stub.
+  - `control_loop.py` — new top-level module. One cycle: safety, scheduler,
+    safety. Shared by the simulator and, in Phase 11, by the ESP32.
+  - `state/state_manager.py` — implemented (it had been a Phase 1 stub).
+  - `experiments/runner.py` — `run_scenario` / `run_standard_set`;
+    `main.py --run-scenarios` prints the result from a shell.
+
+- **Key decisions:**
+  - **The lookahead is the contract, not sophistication.** A `Scheduler`
+    must return a `ConstraintStatus` and must never return a plan that
+    breaches a hard constraint. Phase 1 measured that one 15-minute step
+    moves the level 45 points, so a controller that stops *at* the ceiling
+    has already overshot. Checking its own proposal is the only way this
+    controller can answer the question the interface asks it. With no
+    demand forecast it degrades to plain hysteresis and reports
+    `checked_constraints=()` — a skipped check, not a passed one.
+  - **`SafetyRule` gained `evaluate_action`.** The first implementation of
+    `validate_action` re-ran `check_state` and allowed anything the gate
+    had not compelled — which is to say it validated nothing, since the
+    gate is silent precisely when a scheduler is free to propose something
+    forbidden. Caught by writing the docstring and noticing it described
+    behaviour the code did not have. Cycling limits now reject a proposal
+    without compelling an action; `test_validate_action_catches_what_the_gate_lets_through`
+    is red without it.
+  - **`ReasonCode.BELOW_TARGET_LEVEL` and DB schema v2.** A refill in
+    progress is not an alarm; reporting it as `CRITICAL_LEVEL` would have
+    the "Why?" screen cry wolf at 45% full and would make the count of
+    genuine near-misses meaningless. The enum is `CHECK`-constrained in
+    `scheduler_decisions`, so this was a schema change by construction —
+    the intended friction, paid rather than avoided.
+  - **The control loop lives above `simulator/` and `hardware/`.** If the
+    simulation driver had its own copy, the thing Phase 13 validates on the
+    roof would not be the thing Phase 14 benchmarked. `ControlCycle.decide`
+    returns an action and never actuates, so *command sent != command
+    executed* has somewhere to live.
+  - `ELECTRICAL_SAFETY` has **no rule**, and the gap is declared in
+    `safety.rules.UNCOVERED_PRIORITIES` and asserted by a test. It needs an
+    electrical fault signal that no component produces until Phase 11. A
+    rule that checked nothing would make the layer look complete.
+
+- **Problems hit:**
+  - **Safety overrides were filed under `SchedulerTier.LOCAL_SAFE_MODE`.**
+    Found by probing, not by a test: a run at a deliberately coarse control
+    step showed 26 decisions tagged `LOCAL_SAFE_MODE`, of which 24 were the
+    Pi's own safety rules working correctly. `LOCAL_SAFE_MODE` means the Pi
+    is gone and the ESP32 is autonomous — the opposite state of health, and
+    Phase 14 counts tiers. **Fix:** added `SchedulerTier.SAFETY_LAYER = 0`,
+    which sits above the whole chain.
+  - **The new AST guard caught the author's own CLI.** Adding
+    `--run-scenarios` made `main.py` import `simulator/`, and
+    `test_production_modules_never_import_the_simulator` went red.
+    **Resolution, not exemption:** `main.py` is the composition root and is
+    the one place entitled to choose a concrete world, so the rule for it
+    became *placement* — every simulator import must sit inside a function
+    body, where a Pi in `mode = real` never executes it. The replacement
+    guard was verified red by hoisting the import to module level.
+  - Four tests were written asserting rules that were then deliberately
+    broken to confirm they fail: the lookahead (3 of 4 scenarios go red),
+    the pre-scheduling gate (6 red), `evaluate_action` (4 red), and the
+    simulator-import guards (1 red each). An assertion that has never
+    failed is not yet evidence of anything.
+
+- **Measured and carried forward, not fixed:**
+  - **`sunny` is already unbeatable on grid energy.** The threshold
+    controller draws **0.00 kWh** from the grid there `[simulated]`,
+    because its refill happens to land at 16:00 daily. Phase 3's exit
+    criterion must be judged on `cloudy` (0.51 kWh grid), `low_start`
+    (0.75 kWh) and the aggregate. Recorded in `ROADMAP.md` against Phase 3.
+    The scenario is not being tuned to make the next phase look better.
+  - **A control step of 30 minutes or more cannot hold the band.** At 30
+    lpm the pump delivers 900 L into a 1000 L tank in one step: running
+    overflows, waiting breaches the floor. Measured at 30 min: **23
+    violating steps, 142.4 L spilled**; at 60 min: 13 violating steps,
+    1910.9 L spilled `[simulated]`. The loop degrades honestly — it
+    declines to overflow, the level falls, and the critical-service rule
+    then forces a run that overflows anyway. `test_a_control_step_this_coarse_cannot_hold_the_band`
+    asserts the failure so the limit cannot be crossed silently. The exit
+    criterion is a claim about the configured 15-minute step, not about any
+    step.
+  - **The safety layer is a floor, not a plan.** Every rule is reactive: it
+    sees a level only after it has fallen. Combined with the Phase 1
+    cold-start deadlock, a cold-started run holds the pump for ~21 hours
+    and breaches the critical floor once (minimum level **0.199** against a
+    0.20 floor) before anything starts it `[simulated]`. This is stronger
+    evidence than Phase 1's note for why Phase 11's `state/` owes a boot
+    timestamp; no safety rule can substitute for it.
+  - **`max_starts_per_day` is not a hard bound.** Critical service
+    (priority 5) outranks equipment constraints (7), so the safety layer
+    starts the pump past its daily budget to keep water in the tank.
+    Measured: budget 1, actual **4 starts** over three days `[simulated]`.
+    This is the documented priority order behaving as specified, not a bug,
+    but Phase 8's optimizer must not encode the budget as inviolable.
+
+- **Checked and found compliant, no change:** zero third-party runtime
+  imports (verified against `sys.stdlib_module_names`); `ReasonCode` and the
+  schema `CHECK` clause verified identical programmatically; no ESP32,
+  `api/` or `frontend/` code touched; nothing from the non-goals list; the
+  scheduler never calls `resource.observe()` (asserted); every decision
+  carries a structured explanation, including the ones the scheduler never
+  saw; all figures labelled `SIMULATED` in the CLI output itself rather than
+  in a footnote. `WATER_MODEL_VERSION` and `PV_MODEL_VERSION` were still
+  `0.0.0` despite `version.py` saying "Set in Phase 1" — a Phase 1 leftover,
+  now set to `1.0.0`.
+
+- **AI assistance:** Claude Code wrote the implementation, the tests and the
+  probe scripts, and ran both review passes (adversarial probing, then a
+  line-by-line `CLAUDE.md` audit) unprompted this time — the author's
+  standing instruction from the Phase 1 sessions was "always debug properly,
+  not like last time." The `evaluate_action` gap, the `LOCAL_SAFE_MODE`
+  mislabelling and the four carried-forward measurements were all found by
+  those passes rather than by the test suite. Design calls that remain the
+  author's: the priority order, the roadmap sequencing, and the decision in
+  Phase 1 not to fix control resolution inside the physics.
+
+- **Open questions carried forward:** whether `sunny` should be replaced or
+  supplemented in the standard set once Phase 3 has a second controller to
+  compare — deferred deliberately, since changing the scenario set after
+  seeing one controller's results is how a benchmark stops being one.
+
 ---
 
 ## Maintaining this file
