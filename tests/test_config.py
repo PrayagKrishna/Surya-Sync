@@ -122,3 +122,53 @@ def test_config_is_frozen():
     config = load_config()
     with pytest.raises(Exception):
         config.tank.capacity_l = 1.0  # type: ignore[misc]
+
+
+# --- the command line ----------------------------------------------------
+
+
+def test_run_scenarios_reports_a_clean_standard_set(capsys):
+    """Phase 2's claim, reproducible from a shell rather than a test."""
+    from surya_sync.main import main
+
+    assert main(["--run-scenarios"]) == 0
+    printed = capsys.readouterr().out
+    assert "SIMULATED" in printed
+    for name in ("sunny", "cloudy", "spike", "low_start"):
+        assert name in printed
+
+
+def test_run_scenarios_labels_its_numbers_simulated(capsys):
+    """Never present simulation results as physical results. The label goes
+    in the output, not in a footnote — a table copied out of a terminal
+    loses its footnote immediately."""
+    from surya_sync.main import main
+
+    main(["--run-scenarios"])
+    first_line = capsys.readouterr().out.splitlines()[0]
+    assert "SIMULATED" in first_line
+    assert "not physical measurements" in first_line
+
+
+def test_run_scenarios_refuses_a_scheduler_it_does_not_have(tmp_path, capsys):
+    """Silently running the threshold controller when the config asked for
+    the MPC would attribute one controller's results to another."""
+    from surya_sync.main import main
+
+    path = tmp_path / "config.toml"
+    path.write_text('[scheduler]\nactive = "mpc"\n', encoding="utf-8")
+    assert main(["--config", str(path), "--run-scenarios"]) == 4
+    assert "only 'threshold' is implemented" in capsys.readouterr().err
+
+
+def test_a_scenario_run_does_not_need_a_database(tmp_path, capsys):
+    """It persists nothing yet, so a schema mismatch must not fail a pure
+    simulation for a reason that has nothing to do with it."""
+    from surya_sync.main import main
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[storage]\ndatabase_path = "{tmp_path / "nope" / "x.db"}"\n', encoding="utf-8"
+    )
+    assert main(["--config", str(path), "--run-scenarios"]) == 0
+    assert not (tmp_path / "nope").exists()

@@ -15,7 +15,7 @@ Phase 0: interface and result types only.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, IntEnum
 from typing import Any
@@ -41,6 +41,16 @@ class SchedulerTier(IntEnum):
     The household must keep functioning when the clever algorithm fails.
     Degradation is always downward through these tiers, never a hard stop.
     """
+
+    SAFETY_LAYER = 0
+    """Not a scheduler at all — the safety layer, which sits *above* the
+    whole chain and can compel an action without consulting any tier.
+
+    It is listed here because a decision has to record who made it, and
+    ``scheduler_decisions.tier`` is that field. Filing a safety override
+    under ``LOCAL_SAFE_MODE`` instead would conflate "the Pi's safety rules
+    decided" with "the Pi is gone and the ESP32 is on its own" — which are
+    opposite states of health, and Phase 14 counts them."""
 
     RISK_AWARE_MPC = 1
     PREDICTIVE_HEURISTIC = 2
@@ -94,6 +104,13 @@ class ReasonCode(str, Enum):
 
     MUST_RUN_DEADLINE = "must_run_deadline"
     """Latest feasible start time reached; deferring breaches a constraint."""
+
+    BELOW_TARGET_LEVEL = "below_target_level"
+    """A refill already in progress is continuing because the level has not
+    reached its target yet. Distinct from ``CRITICAL_LEVEL``: nothing is
+    wrong, the tank is simply still filling. Collapsing the two would make
+    the "Why?" screen cry wolf at 45% full, and would make it impossible to
+    count how often the system actually approached the floor."""
 
     # --- reasons to WAIT ---
     SUFFICIENT_LEVEL = "sufficient_level"
@@ -340,8 +357,14 @@ class FallbackChain:
     is logged with the tier that failed and why — silent degradation would
     make the system look like it is working when it is not.
 
-    Phase 0: structure only. Wired up in Phase 2 (two tiers) and completed
-    in Phase 9.
+    A tier is rejected for exactly three reasons, and they are kept
+    separate in the log because they mean different things: it raised (a
+    bug), it reported a non-usable ``SolverStatus`` (it knows it failed),
+    or its plan does not satisfy the hard constraints (it produced
+    something unsafe). Only the third is a scheduling failure; the first
+    two are the scheduler telling the truth about itself.
+
+    Phase 2 wires it up. Phase 9 fills in the upper tiers.
     """
 
     def __init__(self, schedulers: tuple[Scheduler, ...]) -> None:
@@ -353,4 +376,114 @@ class FallbackChain:
         return self._schedulers
 
     def generate_plan(self, request: SchedulingRequest) -> SchedulingPlan:
-        raise NotImplementedError("Phase 2 — see ROADMAP.md")
+        """The first usable plan, in tier order.
+
+        ``fallback_engaged`` is set on the returned plan whenever a more
+        sophisticated tier was tried and rejected — never on the first tier
+        that happens to be registered, because "the MPC was not installed"
+        and "the MPC failed" are not the same event.
+
+        The substantive ``reason_code`` from the tier that succeeded is
+        preserved untouched. Falling back is not a rationale; it is a fact
+        about which tier answered, and it is carried by ``fallback_engaged``
+        and ``tier`` instead.
+        """
+        if not self._schedulers:
+            raise ValueError(
+                "fallback chain is empty; a chain with no tiers cannot degrade, "
+                "it can only fail silently"
+            )
+
+        rejections: list[str] = []
+        for scheduler in self._schedulers:
+            try:
+                plan = scheduler.generate_plan(request)
+            except Exception as exc:  # noqa: BLE001 - a broken tier must not
+                # take the chain down with it; that is what the chain is for.
+                rejections.append(
+                    f"{scheduler.name} raised {type(exc).__name__}: {exc}"
+                )
+                continue
+
+            if plan.solver_status in _UNUSABLE_STATUSES:
+                rejections.append(
+                    f"{scheduler.name} reported solver_status="
+                    f"{plan.solver_status.value}"
+                )
+                continue
+
+            if not plan.constraint_status.satisfied:
+                rejections.append(
+                    f"{scheduler.name} returned a plan violating "
+                    f"{len(plan.constraint_status.violations)} constraint(s)"
+                )
+                continue
+
+            if not rejections:
+                return plan
+            return replace(
+                plan,
+                fallback_engaged=True,
+                explanation=replace(
+                    plan.explanation,
+                    notes=plan.explanation.notes + tuple(rejections),
+                ),
+            )
+
+        return self._safe_mode_plan(request, tuple(rejections))
+
+    def _safe_mode_plan(
+        self, request: SchedulingRequest, rejections: tuple[str, ...]
+    ) -> SchedulingPlan:
+        """Every tier failed. Hold the actuator and say so loudly.
+
+        Holding — ``RUN`` if energized, ``WAIT`` if not — is the only action
+        that no failure can make worse. A chain that has run out of opinions
+        has no basis for a transition, and a spurious transition is the one
+        outcome a total failure must not produce. The actuator's real
+        backstops are the ESP32 deadman timer and the float switch, neither
+        of which depends on this process being alive.
+
+        ``constraint_status`` reports ``checked_constraints=()``: nothing was
+        verified, which is deliberately distinguishable from everything
+        having passed.
+        """
+        held = (
+            ControlAction.RUN
+            if request.observation.actuator_on
+            else ControlAction.WAIT
+        )
+        return SchedulingPlan(
+            first_action=held,
+            planned_actions=(
+                PlannedAction(step_index=0, target_time=request.now, action=held),
+            ),
+            explanation=DecisionExplanation(
+                decision=held,
+                reason_code=ReasonCode.SAFETY_OVERRIDE,
+                service_level=request.observation.service_level,
+                flexibility_minutes=0.0,
+                notes=("every scheduler tier was rejected",) + rejections,
+            ),
+            objective_value=None,
+            predicted_states=(),
+            constraint_status=ConstraintStatus(
+                satisfied=True,
+                violations=(),
+                checked_constraints=(),
+            ),
+            solver_status=SolverStatus.ERROR,
+            algorithm_version="fallback-chain-1.0.0",
+            scheduler_name="local_safe_mode",
+            tier=SchedulerTier.LOCAL_SAFE_MODE,
+            computed_at=request.now,
+            fallback_engaged=True,
+        )
+
+
+_UNUSABLE_STATUSES = frozenset(
+    {SolverStatus.INFEASIBLE, SolverStatus.TIMEOUT, SolverStatus.ERROR}
+)
+"""Statuses that disqualify a plan. ``NOT_APPLICABLE`` is not one of them —
+a rule-based scheduler optimizes nothing and says so, which is a complete
+answer rather than a failure."""

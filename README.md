@@ -76,13 +76,16 @@ Actively in development, following a 16-phase roadmap (see [`ROADMAP.md`](ROADMA
 |---|---|---|
 | 0 | Architecture, interfaces, config, DB schema | ✅ Complete |
 | 1 | Simulator (tank, pump, demand, solar, grid) | ✅ Complete |
-| 2 | Conventional threshold control | 🚧 Next |
-| 3 | Solar-reactive control | ⬜ Not started |
+| 2 | Conventional threshold control, safety layer, control loop | ✅ Complete |
+| 3 | Solar-reactive control | 🚧 Next |
 | 4–16 | Temporal learning → ML → MPC → hardware → frontend | ⬜ Not started |
 
-No scheduling algorithm exists yet — Phase 2 writes the first one. Everything
-through Phase 1 is architecture, physics and the simulated environment those
-schedulers will be compared in.
+The first scheduler exists as of Phase 2: a conventional threshold
+controller, which is the **baseline** every later phase has to beat, not the
+contribution. It runs the four standard scenarios over three simulated days
+with zero hard-constraint violations. It ignores solar entirely — the gap
+between its grid consumption and the later tiers' is the number this project
+is arguing about.
 
 ## Repository Structure
 
@@ -93,6 +96,8 @@ surya_sync/
 ├── temporal/     # Time-aware feature engineering
 ├── ml/           # Demand, solar, base-load forecasting + uncertainty
 ├── models/       # Physical models: tank, pump, flexibility
+├── control_loop.py  # One cycle: safety → scheduler → safety. Shared by
+│                 # the simulator and, in Phase 11, by the ESP32.
 ├── scheduler/    # Threshold → reactive → heuristic → MPC (shared interface)
 ├── safety/       # Rule-based safety layer (runs before scheduler)
 ├── storage/      # SQLite persistence
@@ -111,7 +116,7 @@ Results in this repo are explicitly labeled as **Measured**, **Simulated**, **Pr
 ## Running Locally
 
 Requires Python 3.11+ (for `tomllib`). Still **no third-party runtime
-dependencies** as of Phase 1 — deliberately, since everything eventually runs
+dependencies** as of Phase 2 — deliberately, since everything eventually runs
 on a Pi Zero. ML, solver, serial and API libraries are declared as optional
 extras, gated to the phases that need them.
 
@@ -119,10 +124,30 @@ extras, gated to the phases that need them.
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
-.venv/bin/python -m surya_sync.main --show-config   # resolved config + hash
-.venv/bin/python -m surya_sync.main --init-db       # create SQLite schema
-.venv/bin/python -m pytest                          # test suite
+.venv/bin/python -m surya_sync.main --show-config     # resolved config + hash
+.venv/bin/python -m surya_sync.main --init-db         # create SQLite schema
+.venv/bin/python -m surya_sync.main --run-scenarios   # drive the simulator
+.venv/bin/python -m pytest                            # test suite
 ```
+
+`--run-scenarios` prints Phase 2's result. Every figure in it is **simulated**:
+
+```text
+SIMULATED results — not physical measurements
+config_hash 5eaacb93c063fc88   step 15 min
+scenario    viol  unmet_L  spill_L  starts  pump_kWh  grid_kWh  solar_%
+sunny          0      0.0      0.0       3      0.56      0.00    100.0
+cloudy         0      0.0      0.0       3      0.56      0.51      9.2
+spike          0      0.0      0.0       4      0.94      0.38     60.0
+low_start      0      0.0      0.0       4      0.75      0.75      0.0
+```
+
+The threshold controller never looks at the sun, so `sunny`'s 100% is luck:
+its refill happens to land at 16:00. That is why Phase 3 is judged on
+`cloudy`, `low_start` and the aggregate, not on the easy case.
+
+The schema moved to v2 in Phase 2. A `data/surya_sync.db` written under v1 is
+refused rather than migrated in place — delete it and re-run `--init-db`.
 
 Configuration lives in [`surya_sync/config/default.toml`](surya_sync/config/default.toml).
 Copy it and pass `--config path/to/your.toml` for a real deployment rather than
@@ -132,42 +157,31 @@ produced it.
 
 ### Simulator quickstart
 
-Run one of the four standard scenarios over three simulated days. The
-decision rule below is a two-line placeholder, not a scheduler — Phase 2
-writes the first real one. It is here to show the simulator turning, and its
-numbers are **simulated**, not a result.
+Run one of the four standard scenarios through the real controller, with the
+safety layer and the fallback chain in place. This is the same
+`ControlCycle` the ESP32 will drive in Phase 11 — not a simulation-only
+shortcut. Its numbers are **simulated**, not measured.
 
 ```python
 from surya_sync.config.schema import Config
-from surya_sync.domain import ControlAction
+from surya_sync.experiments.runner import run_scenario
+from surya_sync.scheduler.threshold import ThresholdScheduler
 from surya_sync.simulator import scenarios
-from surya_sync.simulator.tank import SimulatedTankResource
 
 config = Config()
-scenario = scenarios.sunny(config, days=3)      # or cloudy / spike / low_start
-resource = SimulatedTankResource(scenario.build(config))
-sim = resource.simulator
+scenario = scenarios.cloudy(config, days=3)     # or sunny / spike / low_start
+run = run_scenario(config, scenario, ThresholdScheduler(config.scheduler))
 
-steps = []
-for _ in range(scenario.n_steps(5.0)):
-    observation = sim.observe()
-    allowed = resource.admissible_actions(
-        observation, sim.actuation_history(), sim.clock
-    )
-    if observation.service_level < 0.45 and ControlAction.RUN in allowed:
-        action = ControlAction.RUN
-    elif observation.service_level > 0.80 and ControlAction.STOP in allowed:
-        action = ControlAction.STOP
-    else:
-        action = ControlAction.RUN if observation.actuator_on else ControlAction.WAIT
-    steps.append(sim.advance(action, 5.0))
+print(f"pump runtime     {sum(s.minutes for s in run.steps if s.actuator_on):.0f} min")
+print(f"pump energy      {run.pump_energy_kwh:.2f} kWh "
+      f"(grid {run.grid_energy_kwh:.2f} / solar {run.solar_energy_kwh:.2f})")
+print(f"pump starts      {run.starts}")
+print(f"unmet demand     {run.unmet_demand_l:.1f} L")
+print(f"hard violations  {len(run.violation_steps)}")
+print(f"safety overrides {run.safety_overrides}")
 
-grid = sum(s.energy.controllable_grid_kwh for s in steps)
-solar = sum(s.energy.controllable_solar_kwh for s in steps)
-print(f"pump runtime     {sum(s.minutes for s in steps if s.actuator_on):.0f} min")
-print(f"pump energy      {grid + solar:.2f} kWh  (grid {grid:.2f} / solar {solar:.2f})")
-print(f"unmet demand     {sum(s.unmet_demand_l for s in steps):.1f} L")
-print(f"hard violations  {sum(s.violates_hard_constraint for s in steps)}")
+first = run.decisions[0].plan.explanation          # what the "Why?" screen renders
+print(first.to_dict())
 ```
 
 Re-running this reproduces the trajectory exactly; the profiles are pure

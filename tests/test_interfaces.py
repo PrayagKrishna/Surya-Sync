@@ -181,6 +181,7 @@ def test_validator_sorts_rules_by_priority():
 
 
 def test_scheduler_tiers_degrade_downward():
+    assert SchedulerTier.SAFETY_LAYER < SchedulerTier.RISK_AWARE_MPC
     assert SchedulerTier.RISK_AWARE_MPC < SchedulerTier.PREDICTIVE_HEURISTIC
     assert SchedulerTier.PREDICTIVE_HEURISTIC < SchedulerTier.REACTIVE_SOLAR
     assert SchedulerTier.REACTIVE_SOLAR < SchedulerTier.THRESHOLD
@@ -468,6 +469,63 @@ def test_production_layers_never_import_the_simulator(layer):
     }
     offenders = {path: mods for path, mods in offenders.items() if mods}
     assert not offenders, f"production code importing the simulator: {offenders}"
+
+
+REAL_MODULES = ("control_loop.py", "domain.py", "version.py")
+"""Top-level modules that run on the Pi. ``control_loop.py`` matters most:
+it is the one loop both the simulator and the ESP32 drive, and a simulator
+import there would mean the roof runs different code from the benchmark.
+
+``main.py`` is deliberately absent: it is the composition root, and choosing
+which world to run is the one job that belongs there. It gets its own,
+stricter rule below."""
+
+
+@pytest.mark.parametrize("module", REAL_MODULES)
+def test_production_modules_never_import_the_simulator(module):
+    source = Path(__file__).resolve().parent.parent / "surya_sync" / module
+    if not source.exists():
+        pytest.skip(f"{module} does not exist yet")
+    offenders = sorted(
+        name
+        for name in _imported_packages(source)
+        if name.startswith("surya_sync.simulator")
+    )
+    assert not offenders, f"{module} imports the simulator: {offenders}"
+
+
+def test_the_entry_point_imports_the_simulator_only_inside_a_command():
+    """``main.py`` may build a simulated run — it is the composition root,
+    the one place that picks a concrete world. What it may not do is pull the
+    simulator in at module level, because then a Pi in ``mode = real`` loads
+    it on every boot and the separation is only nominal.
+
+    So the rule is placement, not absence: every ``surya_sync.simulator``
+    import must sit inside a function body, where a real deployment never
+    executes it.
+    """
+    source = Path(__file__).resolve().parent.parent / "surya_sync" / "main.py"
+    tree = ast.parse(source.read_text())
+
+    inside_functions = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for inner in ast.walk(node):
+                if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                    inside_functions.add(id(inner))
+
+    module_level = sorted(
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("surya_sync.simulator")
+        and id(node) not in inside_functions
+    )
+    assert not module_level, (
+        "main.py imports the simulator at module level: "
+        f"{module_level}. Move it inside the command that needs it."
+    )
 
 
 def test_the_shared_tank_physics_lives_in_models():

@@ -1,8 +1,13 @@
 """SuryaSync entry point.
 
-Phase 0 does exactly what Phase 0 promises: load and validate config,
-initialize the database schema, report the version stamp. The control
-loop itself lands in Phase 1 once there is a simulator to drive it.
+Loads and validates config, initializes the database schema, reports the
+version stamp, and — from Phase 2 — runs the standard scenario set through
+a controller so that a phase's claims can be reproduced from the command
+line rather than from a test.
+
+One cycle of the loop lives in ``control_loop.ControlCycle``, which is
+shared by the simulator and, in Phase 11, by the ESP32. What is still
+missing here is the part above it: forecasting, uncertainty and MPC.
 
 The loop this will become:
 
@@ -14,6 +19,7 @@ The loop this will become:
 Run with::
 
     python -m surya_sync.main --init-db
+    python -m surya_sync.main --run-scenarios
 """
 
 from __future__ import annotations
@@ -71,7 +77,61 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="print the resolved config hash and key parameters, then exit",
     )
+    parser.add_argument(
+        "--run-scenarios",
+        action="store_true",
+        help="run the standard scenario set through the active controller "
+        "and print a simulated summary, then exit",
+    )
     return parser.parse_args(argv)
+
+
+def run_scenarios(config: Config, versions: VersionStamp) -> int:
+    """Run the standard set and print a summary.
+
+    Every number printed here is **simulated**. The header says so on every
+    run rather than in a footnote, because a table of figures copied out of
+    a terminal loses its caveat immediately.
+    """
+    from surya_sync.experiments.runner import run_standard_set
+    from surya_sync.scheduler.threshold import ThresholdScheduler
+    from surya_sync.simulator.scenarios import standard_set
+
+    if config.scheduler.active != "threshold":
+        print(
+            f"scheduler.active is {config.scheduler.active!r}, but only "
+            "'threshold' is implemented (Phase 2)",
+            file=sys.stderr,
+        )
+        return 4
+
+    runs = run_standard_set(
+        config,
+        standard_set(config),
+        lambda: ThresholdScheduler(config.scheduler),
+        config_hash=versions.config_hash,
+    )
+
+    print("SIMULATED results — not physical measurements")
+    print(f"config_hash {versions.config_hash}   step {config.scheduler.step_minutes:g} min")
+    print(
+        f"{'scenario':10s} {'viol':>5s} {'unmet_L':>8s} {'spill_L':>8s} "
+        f"{'starts':>7s} {'pump_kWh':>9s} {'grid_kWh':>9s} {'solar_%':>8s}"
+    )
+    worst = 0
+    for run in runs:
+        share = (
+            100.0 * run.solar_energy_kwh / run.pump_energy_kwh
+            if run.pump_energy_kwh > 0.0
+            else 0.0
+        )
+        worst = max(worst, len(run.violation_steps))
+        print(
+            f"{run.scenario_name:10s} {len(run.violation_steps):5d} "
+            f"{run.unmet_demand_l:8.1f} {run.spilled_l:8.1f} {run.starts:7d} "
+            f"{run.pump_energy_kwh:9.2f} {run.grid_energy_kwh:9.2f} {share:8.1f}"
+        )
+    return 0 if worst == 0 else 5
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,6 +172,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"database          {config.storage.database_path}")
         return 0
 
+    if args.run_scenarios:
+        # Deliberately before the database is opened: a scenario run persists
+        # nothing yet, so requiring a schema-matched database would make a
+        # pure simulation fail for a reason that has nothing to do with it.
+        # Phase 14 persists results, and then this moves back down.
+        return run_scenarios(config, versions)
+
     try:
         with Database(config.storage.database_path) as database:
             version = database.initialize_schema()
@@ -129,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     logger.info(
-        "control loop not implemented yet — Phase 1 (simulator). See ROADMAP.md"
+        "continuous control loop not wired up yet — Phase 9 (MPC). "
+        "Use --run-scenarios to drive the simulator. See ROADMAP.md"
     )
     return 0
 

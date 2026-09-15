@@ -65,6 +65,7 @@ pump run now." Never merge these two layers.
 ```
 surya_sync/
 ├── main.py
+├── control_loop.py  (one cycle: safety -> scheduler -> safety)
 ├── config/
 ├── hardware/        (esp32_serial.py, commands.py, interfaces.py)
 ├── state/           (system_state.py, state_manager.py)
@@ -145,9 +146,51 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 1 complete and hardened. Simulator, physical models and the standard scenario
-set are in; 277 tests pass. Phase 2 (threshold controller) is cleared to
-start.`
+`Phase: 2 complete. Threshold controller, safety layer, fallback chain and the
+shared control loop are in; 379 tests pass. Zero hard-constraint violations
+across the standard scenario set [simulated]. Phase 3 (solar-reactive
+control) is cleared to start.`
+
+Carried out of Phase 2:
+- **`sunny` gives the threshold controller 100% solar already** (0.00 kWh
+  grid, `--run-scenarios`). Its refill happens to land at 16:00 every day.
+  Phase 3's exit criterion — "beats the threshold controller on grid-powered
+  pump energy" — is therefore **unwinnable in `sunny`** and must be judged on
+  `cloudy` (0.51 kWh grid), `low_start` (0.75) and the aggregate. Do not
+  tune the scenario to fix this; report it.
+- **A control step of 30 min or more cannot hold the band.** At 30 lpm the
+  pump delivers 900 L in one step, so running overflows and waiting breaches
+  the floor. The loop degrades honestly (declines to overflow, the critical
+  rule then forces a run that overflows anyway: 23 violations, 142 L spilled
+  [simulated]), but it cannot win. `test_a_control_step_this_coarse_cannot_hold_the_band`
+  pins it so nobody raises `scheduler.step_minutes` and reads a clean board.
+- **The safety layer is a floor, not a plan.** Every rule is reactive: it
+  sees a level only after it has fallen. On a cold start the tank breaches
+  critical once (min 0.199) before anything starts the pump. No safety rule
+  can fix that; only a scheduler that predicts can.
+- **`max_starts_per_day` is not a hard bound.** Critical service (priority 5)
+  outranks equipment constraints (7), so the safety layer will start the pump
+  past its daily budget to keep water in the tank. Measured: budget 1, actual
+  4 starts over three days [simulated]. Phase 8's optimizer must not encode it
+  as inviolable.
+- **`SchedulerTier.SAFETY_LAYER` (0) exists so a safety override is not filed
+  as `LOCAL_SAFE_MODE`.** "The Pi's rules decided" and "the Pi is gone and the
+  ESP32 is on its own" are opposite states of health, and Phase 14 counts
+  tiers. This was a real labelling bug, found by probing rather than by a test.
+- **`ReasonCode.BELOW_TARGET_LEVEL` was added, and with it DB schema v2.** A
+  refill in progress is not an alarm; reporting it as `CRITICAL_LEVEL` would
+  have the "Why?" screen cry wolf at 45% full. Any local `data/surya_sync.db`
+  written under v1 is refused, by design — delete it and re-run `--init-db`.
+- The threshold controller does a **one-step lookahead** with
+  `predict_trajectory` and refuses its own proposal if it breaches a hard
+  constraint. That is the `Scheduler` contract (it must return a
+  `ConstraintStatus`), not intelligence smuggled into the baseline. With no
+  demand forecast it degrades to plain hysteresis and reports
+  `checked_constraints=()` rather than implying the check passed.
+- `ELECTRICAL_SAFETY` has **no rule yet** and that gap is declared in
+  `safety.rules.UNCOVERED_PRIORITIES` and asserted by a test. It needs an
+  electrical fault signal, which arrives with the ESP32 in Phase 11. A rule
+  that checked nothing would make the layer look complete.
 
 Carried out of Phase 1:
 - **A cold start deadlocks the pump.** `changed_at` is written by a
@@ -156,6 +199,10 @@ Carried out of Phase 1:
   begins at `clock`; `TankSimulator(cold_start=True)` exercises the real
   path). Phase 11's `state/` must establish a timestamp from the actuation
   log or from boot time, or a real Pi will never start the pump.
+  **Phase 2 measured the cost:** with the full safety layer running, a
+  cold-started run holds the pump for ~21 hours and breaches the critical
+  floor once (min 0.199) before the critical-service rule forces a start
+  [simulated]. Pinned by `test_a_cold_start_holds_the_pump_until_the_floor_forces_it`.
 - **15-minute control steps cannot hold the target band.** At 30 lpm the
   pump fills the 1000 L tank in 33 minutes, so one `scheduler.step_minutes`
   moves the level 45 points. Phase 2's controller must predict the fill and
