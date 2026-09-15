@@ -144,8 +144,32 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 0 complete, reviewed and pushed. Interface changes from the review
-are in. Phase 1 (simulator) is cleared to start.`
+`Phase: 1 complete. Simulator, physical models and the standard scenario
+set are in; 262 tests pass. Phase 2 (threshold controller) is cleared to
+start.`
+
+Carried out of Phase 1:
+- **A cold start deadlocks the pump.** `changed_at` is written by a
+  transition, and unknown timing forbids the only transition that would
+  write it. The simulator sidesteps this (a simulated world provably
+  begins at `clock`; `TankSimulator(cold_start=True)` exercises the real
+  path). Phase 11's `state/` must establish a timestamp from the actuation
+  log or from boot time, or a real Pi will never start the pump.
+- **15-minute control steps cannot hold the target band.** At 30 lpm the
+  pump fills the 1000 L tank in 33 minutes, so one `scheduler.step_minutes`
+  moves the level 45 points. Phase 2's controller must predict the fill and
+  stop early; a purely reactive one overshoots for reasons that are not its
+  fault. Do not "fix" this by editing the physics.
+- Scheduler-facing physics lives in `models/tank.py` and `models/pump.py`,
+  not in the simulator. `predict_trajectory` and `TankSimulator.advance`
+  both call `TankModel.step` and a test asserts they agree exactly. Never
+  give the optimizer its own copy of the mass balance.
+- Profiles are **pure functions of time**, never call-ordered random
+  streams (`simulator/noise.py`), because MPC re-queries the same instant
+  across replans and replay re-queries out of order.
+- Grid attribution: the pump may claim only surplus PV left after the base
+  household load. That rule is what makes Phase 3's exit criterion a real
+  test rather than bookkeeping.
 
 Carried out of the Phase 0 review (`PHASE0_REVIEW.md` section 5):
 - `admissible_actions(observation, history, now)` takes an

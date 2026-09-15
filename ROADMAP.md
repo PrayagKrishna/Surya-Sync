@@ -14,10 +14,15 @@ closes.
   72 tests pass. Only `config/loader.py` and `storage/database.py` carry
   implementation — required by the exit criteria themselves.*
 
-- [ ] **Phase 1 — Simulator**
+- [x] **Phase 1 — Simulator** ✅
   Tank simulator, pump model, demand profiles, solar profiles, grid model.
   Exit: `SimulatedTankResource` runs a multi-day trajectory deterministically;
   unit tests for tank conversion + physical model + pump model pass.
+  *Met: `SimulatedTankResource` runs the four standard scenarios over three
+  simulated days and reproduces them exactly; `predict_trajectory` and
+  `TankSimulator.advance` are asserted to agree to floating point because
+  both call `TankModel.step`; 262 tests pass, of which 181 are physical —
+  up from 0.*
 
 - [ ] **Phase 2 — Conventional control**
   Threshold controller implementing `Scheduler`.
