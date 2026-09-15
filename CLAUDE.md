@@ -144,8 +144,8 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 1 complete. Simulator, physical models and the standard scenario
-set are in; 262 tests pass. Phase 2 (threshold controller) is cleared to
+`Phase: 1 complete and hardened. Simulator, physical models and the standard scenario
+set are in; 269 tests pass. Phase 2 (threshold controller) is cleared to
 start.`
 
 Carried out of Phase 1:
@@ -170,6 +170,17 @@ Carried out of Phase 1:
 - Grid attribution: the pump may claim only surplus PV left after the base
   household load. That rule is what makes Phase 3's exit criterion a real
   test rather than bookkeeping.
+- `must_run_by is None` means **unconstrained**, never "too late". A tank
+  nothing can save reports a deadline of *now*. Do not collapse the two.
+- A demand forecast is checked by `target`, not assumed. Handing the tank a
+  PV series used to produce a plausible, entirely wrong trajectory.
+- **Phase 14 trap:** `Scenario.n_steps` truncates when the step does not
+  divide the run, so controllers benchmarked at different step sizes cover
+  different durations. Fix the step across a comparison, or normalize
+  per-minute before reporting.
+- `flexibility_minutes` reports the horizon length when no floor is breached
+  within it — a lower bound presented as a value. Conservative, so accepted;
+  do not read it as exact.
 
 Carried out of the Phase 0 review (`PHASE0_REVIEW.md` section 5):
 - `admissible_actions(observation, history, now)` takes an
