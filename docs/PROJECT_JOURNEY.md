@@ -379,6 +379,59 @@ probing the code adversarially instead.
     `FlexibilityEstimate` has no field saying so. It errs conservative, so it
     is recorded rather than fixed.
 
+### 2026-09-15 — Phase 1 audited against `CLAUDE.md` — commit `b9916f6`
+
+Prompted by "make sure you follow the CLAUDE.md thoroughly." Rather than
+assert compliance, Phase 1 was checked line by line against the file. Two
+misses, one of them structural.
+
+- **Built:** no new capability. A move, one structural guard test, two
+  documentation corrections.
+- **Problems hit:**
+  - **Shared physics was in the wrong package.** `CLAUDE.md` reserves
+    `models/flexibility.py` for the flexibility maths; it was left a stub
+    while that maths, the trajectory rollout, the constraint check and the
+    forecast helpers all sat in `simulator/tank.py`. Nothing imported them
+    from outside, so nothing was broken and no test could have caught it.
+    **Root cause:** the work was organized around the module being written
+    rather than around which layer would need it. **Why it mattered:**
+    Phase 11's `RealTankResource` needs every one of those functions, and
+    would have had to import them from `simulator/` — production code
+    depending on the simulator. The realistic outcome is not that import
+    but a copy, at which point the hard rule "simulated and real resources
+    run through the **exact same** scheduling code — never fork the
+    algorithm" would have quietly stopped holding. **Fix:** moved to
+    `domain.py`, `models/tank.py` and `models/flexibility.py`;
+    `SimulatedTankResource` is now a thin adapter.
+  - The `CLAUDE.md` directory block still listed `simulator/` as four files
+    after `grid.py` and `noise.py` were added. **Fix:** listed them.
+- **Key decisions:**
+  - `predict_tank_trajectory` and `estimate_tank_flexibility` are free
+    functions taking explicit models, not methods. Both adapters become
+    three-line delegations, which makes the no-fork rule structural rather
+    than a convention someone has to remember.
+  - The guard is a test, not a docstring. `test_interfaces.py` now walks the
+    AST of every production package and fails on any
+    `surya_sync.simulator` import. It was verified by deliberately adding a
+    violation and watching it go red — an assertion that has never failed is
+    not yet evidence of anything.
+- **Checked and found compliant, no change:** zero third-party runtime
+  dependencies (verified against `sys.stdlib_module_names`, not by reading
+  imports); every model, profile and scenario carries a version string; all
+  five `Provenance` values used correctly and no simulated figure presented
+  as measured; no ESP32 or scheduling logic added; nothing from the
+  non-goals list; the priority order respected (physical modelling, no UI).
+- **Results:** 277 tests passing, up from 269 — the same 269 plus 8 guards.
+  No behaviour change; the move was verified by the suite being unchanged
+  and by re-running the five bug probes from `715db70`.
+- **AI assistance:** The audit, the diagnosis and the move were Claude
+  Code's, prompted by the author's instruction to follow `CLAUDE.md`
+  thoroughly. Both misses had survived a phase sign-off and a bug-hunting
+  pass; neither was found by the test suite.
+- **Open questions carried forward:** unchanged from `715db70`. Phase 11
+  should confirm `RealTankResource` needs nothing further from `models/`
+  than the four tank functions and the three flexibility ones.
+
 ---
 
 ## Maintaining this file
