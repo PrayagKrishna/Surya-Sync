@@ -1,4 +1,4 @@
--- SuryaSync database schema, version 1.
+-- SuryaSync database schema, version 2.
 --
 -- Three principles are enforced structurally rather than by convention:
 --
@@ -230,10 +230,11 @@ CREATE TABLE IF NOT EXISTS scheduler_decisions (
     reason_code       TEXT    NOT NULL
         CHECK (reason_code IN (
             'critical_level', 'solar_surplus_available', 'optimal_window_now',
-            'no_better_window_ahead', 'must_run_deadline', 'sufficient_level',
-            'awaiting_solar', 'demand_low', 'equipment_cooldown',
-            'target_reached', 'solar_surplus_ended', 'safety_override',
-            'manual_override', 'sensor_invalid', 'anomaly_detected'
+            'no_better_window_ahead', 'must_run_deadline', 'below_target_level',
+            'sufficient_level', 'awaiting_solar', 'demand_low',
+            'equipment_cooldown', 'target_reached', 'solar_surplus_ended',
+            'safety_override', 'manual_override', 'sensor_invalid',
+            'anomaly_detected'
         )),
     objective_value   REAL,             -- NULL for rule-based schedulers
     solver_status     TEXT    NOT NULL

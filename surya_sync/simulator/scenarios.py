@@ -84,11 +84,22 @@ class Scenario:
             raise ValueError("step_minutes must be > 0")
         return int(self.total_minutes() // step_minutes)
 
-    def build(self, config: Config, resource_id: str = "tank_1") -> TankSimulator:
+    def build(
+        self,
+        config: Config,
+        resource_id: str = "tank_1",
+        cold_start: bool = False,
+    ) -> TankSimulator:
         """A fresh simulator at the scenario's starting conditions.
 
         Called once per controller so that no run can be contaminated by a
         previous one's state.
+
+        ``cold_start`` leaves the actuator's timing unknown, as on a Pi that
+        has booted with no actuation log. It is off by default because a
+        comparison between controllers must not be perturbed by it; it is
+        available because the path needs exercising by something other than
+        a unit test. See ``TankSimulator.cold_start``.
         """
         return TankSimulator.from_config(
             config=config,
@@ -98,6 +109,7 @@ class Scenario:
             initial_service_level=self.initial_service_level,
             base_load_profile=self.base_load_profile,
             resource_id=resource_id,
+            cold_start=cold_start,
         )
 
 

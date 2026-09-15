@@ -24,15 +24,26 @@ closes.
   both call `TankModel.step`; 262 tests pass, of which 181 are physical —
   up from 0.*
 
-- [ ] **Phase 2 — Conventional control**
+- [x] **Phase 2 — Conventional control** ✅
   Threshold controller implementing `Scheduler`.
   Exit: runs against the simulator, never violates hard tank constraints
   across the standard scenario set (sunny/cloudy/spike/low-start).
+  *Met: `ThresholdScheduler` runs all four scenarios over three simulated
+  days with **0 violating steps, 0 L spilled and 0 L unmet demand**, within
+  the daily start budget (`--run-scenarios`, and asserted per scenario in
+  `tests/test_control_loop.py`). The safety layer, the fallback chain and the
+  shared `control_loop.ControlCycle` landed with it; 379 tests pass, up from
+  277. The exit criterion holds at the configured 15-minute step and is not a
+  claim about any step — 30 minutes and above provably cannot hold the band,
+  and a test pins that.*
 
 - [ ] **Phase 3 — Solar-reactive control**
   Simple current-surplus scheduler.
   Exit: beats threshold controller on grid-powered pump energy in
   simulation; comparison logged via `analytics/comparison.py`.
+  *Note from Phase 2: the threshold controller already draws 0.00 kWh from
+  the grid in `sunny`, so that scenario cannot be beaten. Judge on `cloudy`
+  (0.51 kWh), `low_start` (0.75 kWh) and the aggregate.*
 
 - [ ] **Phase 4 — Temporal behaviour**
   Cyclic time encoding, historical slot means, lag/rolling features.

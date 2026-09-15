@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 
 from surya_sync.domain import ControlAction, Provenance, RunMode
-from surya_sync.models.generic_resource import ResourceObservation
+from surya_sync.models.generic_resource import ActuationHistory, ResourceObservation
 from surya_sync.version import VersionStamp
 
 
@@ -103,6 +103,19 @@ class SystemState:
 
     actuation: dict[str, ActuationState] = field(default_factory=dict)
     """Keyed by ``resource_id``."""
+
+    actuation_history: dict[str, ActuationHistory] = field(default_factory=dict)
+    """Actuator *timing*, keyed by ``resource_id``.
+
+    ``actuation`` above answers "what state is it in, according to whom".
+    This answers "for how long, and how many times today" — the only
+    questions the equipment and actuator-protection rules can be decided
+    from. They are separate because they fail separately: a relay can
+    report ``on`` correctly while the timing behind it is unknown.
+
+    A missing entry means *unknown*, and every time-based rule must then
+    read as unsatisfied. See ``ActuationHistory.unknown``.
+    """
 
     electrical: ElectricalState | None = None
 

@@ -19,17 +19,26 @@ from typing import Any
 BACKEND_VERSION = "0.1.0"
 """Overall application version."""
 
-DB_SCHEMA_VERSION = 1
-"""Integer, monotonically increasing. Matches ``storage/schema.sql``."""
+DB_SCHEMA_VERSION = 2
+"""Integer, monotonically increasing. Matches ``storage/schema.sql``.
+
+v2 (Phase 2) adds ``below_target_level`` to the ``reason_code`` vocabulary.
+The ``ReasonCode`` enum is ``CHECK``-constrained in ``scheduler_decisions``,
+so a new code is a schema change by construction — that friction is the
+point, not an accident."""
 
 SERIAL_PROTOCOL_VERSION = "1.0"
 """Newline-delimited JSON protocol spoken over USB serial to the ESP32."""
 
-WATER_MODEL_VERSION = "0.0.0"
-"""Tank + pump physical model. Set in Phase 1."""
+WATER_MODEL_VERSION = "1.0.0"
+"""Tank + pump physical model. Covers ``models.tank`` (``tank-1.0.0``) and
+``models.pump`` (``pump-1.0.0``) together, because a trajectory depends on
+both and neither is useful alone."""
 
-PV_MODEL_VERSION = "0.0.0"
-"""Rooftop PV generation model. Set in Phase 1 / refined in Phase 6."""
+PV_MODEL_VERSION = "1.0.0"
+"""Rooftop PV generation model — the clear-sky geometry plus the grid
+attribution rule in ``simulator/``. Refined in Phase 6, when a forecast
+replaces the geometry."""
 
 
 @dataclass(frozen=True, slots=True)
