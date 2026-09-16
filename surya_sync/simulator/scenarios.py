@@ -187,11 +187,59 @@ def low_start(config: Config, days: float = 3.0) -> Scenario:
     )
 
 
+def monsoon(config: Config, days: float = 30.0) -> Scenario:
+    """Sustained heavy overcast for the whole run — no intermittent breaks.
+
+    Distinct from ``cloudy``, which is short, intermittent surplus windows
+    that a scheduler can still catch. This is a steady, low ceiling on
+    solar for the entire run: surplus rarely if ever covers the pump's full
+    draw. Tests whether a current-surplus scheduler concedes to the grid
+    gracefully — never worse than the threshold controller — rather than
+    chasing a surplus that never fully arrives.
+    """
+    return Scenario(
+        name="monsoon",
+        description="Sustained heavy overcast for the whole run, with none "
+        "of 'cloudy's intermittent breaks. Surplus rarely if ever covers "
+        "the pump's full draw.",
+        demand_profile=_household_demand(),
+        solar_profile=OvercastProfile(clear_sky=_clear_sky(config), cloud_factor=0.15),
+        base_load_profile=DiurnalBaseLoadProfile(),
+        initial_service_level=0.60,
+        days=days,
+    )
+
+
 def standard_set(config: Config, days: float = 3.0) -> tuple[Scenario, ...]:
-    """Every controller from Phase 2 onward is measured against all four."""
+    """The four scenarios Phase 2's exit criterion was measured and pinned
+    against, at the 3-day duration that measurement used. Frozen: do not
+    add to this set or change its default duration — extend
+    ``extended_set`` instead. See ``tests/test_control_loop.py``'s
+    "Phase 2 exit criterion" section, which parametrizes over these four
+    names literally, not over this function's output."""
     return (
         sunny(config, days),
         cloudy(config, days),
         spike(config, days),
         low_start(config, days),
+    )
+
+
+def extended_set(config: Config, days: float = 30.0) -> tuple[Scenario, ...]:
+    """The standard four, run long enough to separate a real trend from a
+    short-window artifact, plus ``monsoon`` for sustained (not
+    intermittent) poor solar.
+
+    Phase 3 measured that 3 days was too short to judge a solar-reactive
+    controller fairly: at 3 days, `spike` and `sunny` looked tied to the
+    threshold controller on grid energy; by 14 days both were clear
+    reactive wins, and the 3-day tie was a duration artifact, not a real
+    limit `[simulated]`. Use this set, not ``standard_set``, for any
+    controller comparison from Phase 3 onward — ``standard_set`` stays
+    frozen at 3 days because that is what Phase 2's exit criterion was
+    already measured and pinned against.
+    """
+    return (
+        *standard_set(config, days),
+        monsoon(config, days),
     )
