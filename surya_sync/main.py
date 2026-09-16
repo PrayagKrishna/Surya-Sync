@@ -163,11 +163,18 @@ def run_scenarios(config: Config, versions: VersionStamp) -> int:
 
 
 def compare_schedulers(config: Config, versions: VersionStamp) -> int:
-    """Run threshold and reactive across the standard set and compare.
+    """Run threshold and reactive across the extended set and compare.
 
     This is the Phase 3 exit criterion in executable form: grid-powered
     pump energy, threshold vs. reactive, per scenario and aggregated. Every
     number is **simulated**.
+
+    Uses ``extended_set`` (30 days, five scenarios), not ``standard_set``
+    (3 days, four scenarios): Phase 3 measured that 3 days was too short to
+    tell a real tie from a short-window artifact — `spike` and `sunny`
+    looked tied to threshold at 3 days and were not by 14. ``standard_set``
+    stays frozen at 3 days as the record of what Phase 2 was measured
+    against.
 
     Each controller runs standalone here, with no fallback beneath it —
     unlike ``run_scenarios``, which runs the real chain. A comparison is
@@ -177,9 +184,9 @@ def compare_schedulers(config: Config, versions: VersionStamp) -> int:
     """
     from surya_sync.analytics.comparison import aggregate_grid_kwh, compare_grid_energy
     from surya_sync.experiments.runner import run_standard_set
-    from surya_sync.simulator.scenarios import standard_set
+    from surya_sync.simulator.scenarios import extended_set
 
-    scenarios = standard_set(config)
+    scenarios = extended_set(config)
     baseline_runs = run_standard_set(
         config,
         scenarios,
@@ -208,7 +215,7 @@ def compare_schedulers(config: Config, versions: VersionStamp) -> int:
     rows = compare_grid_energy(baseline_runs, candidate_runs)
     baseline_total, candidate_total = aggregate_grid_kwh(rows)
 
-    print("SIMULATED results — not physical measurements")
+    print(f"SIMULATED results — not physical measurements ({scenarios[0].days:g} days)")
     print(f"config_hash {versions.config_hash}   step {config.scheduler.step_minutes:g} min")
     print(
         f"{'scenario':10s} {'threshold_kWh':>14s} {'reactive_kWh':>13s} "
@@ -224,9 +231,9 @@ def compare_schedulers(config: Config, versions: VersionStamp) -> int:
         f"{baseline_total - candidate_total:10.2f}"
     )
     print(
-        "note: 'sunny' already draws 0.00 kWh from the grid under threshold "
-        "(Phase 2) and cannot be beaten — judge this exit criterion on "
-        "'cloudy', 'low_start' and the aggregate."
+        "note: 'sunny' looked unbeatable at Phase 2's 3-day duration (0.00 "
+        "kWh grid under threshold) but is not at 30 days — that was a "
+        "short-window artifact, not a real limit [simulated]."
     )
 
     if worst:

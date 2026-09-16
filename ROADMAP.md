@@ -37,23 +37,52 @@ closes.
   claim about any step — 30 minutes and above provably cannot hold the band,
   and a test pins that.*
 
-- [ ] **Phase 3 — Solar-reactive control**
+- [x] **Phase 3 — Solar-reactive control** ✅
   Simple current-surplus scheduler.
   Exit: beats threshold controller on grid-powered pump energy in
   simulation; comparison logged via `analytics/comparison.py`.
+  *Met: `ReactiveScheduler` beats the threshold controller on the
+  extended-set aggregate (21.537 -> 15.872 kWh grid, `[simulated]`, 30
+  days) and on 3 of 5 individual scenarios (`low_start`, `spike`, `sunny`),
+  with the other 2 (`cloudy`, `monsoon`) tying — never losing — for a
+  measured, structural reason recorded below. Comparison logged via
+  `analytics/comparison.py` and reproducible with `--compare-schedulers`.
+  Zero hard-constraint violations at every duration checked (3-60 days).
+  412 tests pass. Closed 2026-09-16 on the extended-set evidence, after an
+  earlier close-or-not-yet decision was made and then revisited once the
+  3-day benchmark was found to be too short a window (see below).*
   *Note from Phase 2: the threshold controller already draws 0.00 kWh from
   the grid in `sunny`, so that scenario cannot be beaten. Judge on `cloudy`
   (0.51 kWh), `low_start` (0.75 kWh) and the aggregate.*
-  *Measured [simulated], `--compare-schedulers`, standard set, 3 days:
-  `low_start` 0.75 -> 0.19 kWh, aggregate 1.64 -> 1.07 kWh, `sunny` tied at
-  0.00. `cloudy` and `spike` tie exactly (0.51 and 0.38 unchanged) — the
-  reactive scheduler only tops up on surplus that fully covers the pump's
-  rated draw (0.75 kW), so it never grid-subsidizes a partial-surplus start,
-  and neither scenario offers a full-coverage window before the
-  level-triggered run would fire anyway. Zero hard-constraint violations
-  across the standard set. **Decision (2026-09-16): phase stays open.** An
-  aggregate win with two scenarios tied is not enough to close it — push
-  further on `cloudy`/`spike` before starting Phase 4. See
+  *Measured [simulated] at the original 3-day standard set: `low_start`
+  0.75 -> 0.19 kWh, aggregate 1.64 -> 1.07 kWh, `sunny`/`cloudy`/`spike` all
+  tied. **3 days turned out to be too short to judge this fairly** — see
+  below.*
+  *Re-measured [simulated] on `extended_set` (30 days, five scenarios —
+  `sunny`/`cloudy`/`spike`/`low_start` plus `monsoon`, sustained heavy
+  overcast) via `--compare-schedulers`:*
+  | scenario | threshold kWh | reactive kWh | saved |
+  |---|---|---|---|
+  | cloudy | 5.443 | 5.443 | 0.000 (tied) |
+  | low_start | 3.586 | 1.137 | 2.449 |
+  | monsoon | 5.813 | 5.813 | 0.000 (tied) |
+  | spike | 4.045 | 2.148 | 1.896 |
+  | sunny | 2.651 | 1.331 | 1.320 |
+  | **aggregate** | **21.537** | **15.872** | **5.666** |
+  *`spike` and `sunny` — tied at 3 days — are clear wins once run long
+  enough (confirmed from 7 days onward across 3/7/14/30/60-day checks); the
+  3-day tie was a duration artifact, not a real limit. `cloudy` and
+  `monsoon` (a second, harsher poor-solar scenario added specifically to
+  test this) tie exactly at every duration checked, 3 through 60 days — a
+  stable, structural limit: the reactive scheduler only tops up on surplus
+  that fully covers the pump's rated draw (0.75 kW), and neither scenario
+  ever offers such a window before the level-triggered run would fire
+  anyway. Zero hard-constraint violations across the extended set at any
+  tested duration. **Decision (2026-09-16): closed.** The first close-or-
+  not-yet call was made against the weaker 3-day numbers and came down
+  "not yet"; re-measured on the 30-day extended set, the case is a clean
+  win (3 of 5 scenarios improve, 2 tie for a stated structural reason,
+  none regress), and the author confirmed closing on this evidence. See
   `PROJECT_JOURNEY.md`.*
 
 - [ ] **Phase 4 — Temporal behaviour**
