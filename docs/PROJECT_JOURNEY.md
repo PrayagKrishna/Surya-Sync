@@ -659,6 +659,88 @@ has two links in it. **Deliberately not closed** — see below.
 
 ---
 
+### 2026-09-16 — Phase 3 closed: the 3-day benchmark was too short — commit `0a4aba5`
+
+Answers the open question the previous entry carried forward, and reverses
+that entry's "keep it open" call — linked back here, not edited there.
+
+- **What changed the answer:** the author asked to extend testing to 30
+  days and a wider variety of conditions before trusting the earlier
+  result, rather than accepting a 3-day comparison as sufficient evidence
+  either way. Re-running the same two controllers on longer scenarios
+  showed the 3-day comparison had been measuring a duration artifact, not
+  the controllers.
+
+- **Built:**
+  - `simulator/scenarios.py` — `monsoon` (sustained heavy overcast, no
+    intermittent breaks — harsher and steadier than `cloudy`) and
+    `extended_set` (the standard four plus `monsoon`, defaulting to 30
+    days). `standard_set` is untouched and documented as frozen: it is the
+    literal record Phase 2's exit criterion was measured against, and nothing
+    should change its default duration or membership.
+  - `main.py --compare-schedulers` now runs `extended_set`, not
+    `standard_set`.
+  - `tests/test_reactive_vs_threshold_scenarios.py` rewritten around the
+    extended set, with a module-scoped fixture computing each of the ten
+    (scenario, scheduler) runs exactly once — the previous version
+    recomputed several of them up to three times across different tests
+    (65s for that file; 19s after).
+
+- **Measured** `[simulated]`, `--compare-schedulers`, extended set (30
+  days, five scenarios):
+
+  | scenario | threshold kWh | reactive kWh | verdict |
+  |---|---|---|---|
+  | cloudy | 5.443 | 5.443 | tied |
+  | low_start | 3.586 | 1.137 | reactive wins |
+  | monsoon | 5.813 | 5.813 | tied |
+  | spike | 4.045 | 2.148 | reactive wins |
+  | sunny | 2.651 | 1.331 | reactive wins |
+  | **aggregate** | **21.537** | **15.872** | reactive wins |
+
+  Checked at 3, 7, 14, 30 and 60 days: `spike` and `sunny`, tied at 3 days,
+  are reactive wins from 7 days onward and the margin grows with duration —
+  the 3-day tie was the comparison not running long enough to see the
+  effect, not a real limit. `cloudy` and `monsoon` tie exactly at every one
+  of those durations, which is the opposite signature: a stable, structural
+  tie, not an artifact of the window. `monsoon` was added for exactly this
+  test — sustained rather than intermittent poor solar — and it reproduces
+  the tie, which is what ruled artifact out. Zero hard-constraint
+  violations at any duration checked. 412 tests pass, up from 405.
+
+- **Why `cloudy`/`monsoon` still tie, and why that is not being chased
+  further inside Phase 3:** `ReactiveScheduler` only tops up on surplus that
+  fully covers the pump's rated draw (0.75 kW) — the fix for the regression
+  recorded in the previous entry. Neither scenario ever offers a
+  full-coverage window before the level-triggered run would fire anyway, so
+  there is nothing this tier can act on without reading a solar forecast,
+  which would make it Phase 7's heuristic wearing this tier's name. The
+  open question the previous entry carried forward is answered: the honest
+  answer is that a tier-3 scheduler cannot do more here, and closing on the
+  aggregate result is correct rather than premature.
+
+- **Decision:** Phase 3 closed 2026-09-16. The previous entry's "keep it
+  open" was the right call against the evidence available at the time — a
+  3-day comparison with two scenarios tied was genuinely not enough. It is
+  reversed here, not corrected there, because the entry recorded a real
+  decision made on real (if incomplete) evidence.
+
+- **AI assistance:** Claude Code built `monsoon`/`extended_set`, reran the
+  comparison across five durations, rewrote the test file for speed, and
+  updated `ROADMAP.md`/`CLAUDE.md`. The author's calls: requesting the
+  longer, wider benchmark rather than accepting the 3-day result either
+  way, and then confirming closure once the extended-set evidence was in —
+  the AI had recommended closing on the weaker 3-day aggregate at the
+  previous entry and was overruled; this time the recommendation and the
+  author's call agreed, on stronger evidence.
+
+- **Open questions carried forward:** none for Phase 3. Phase 7 inherits
+  the `cloudy`/`monsoon` case as its own concrete target — beating them
+  requires exactly the solar-forecast-based deferral this tier was
+  deliberately kept from doing.
+
+---
+
 ## Maintaining this file
 
 1. Add an entry at the end of every phase, and at the end of any session that
