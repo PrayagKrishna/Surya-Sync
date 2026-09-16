@@ -83,7 +83,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="run the standard scenario set through the active controller "
         "and print a simulated summary, then exit",
     )
+    parser.add_argument(
+        "--compare-schedulers",
+        action="store_true",
+        help="run the standard scenario set through the threshold and "
+        "reactive controllers and print grid-energy comparison, then exit",
+    )
     return parser.parse_args(argv)
+
+
+def _build_schedulers(name: str, config: Config) -> tuple:
+    """The fallback chain for one configured active tier.
+
+    Returns every tier from ``name`` down to the threshold controller, so
+    that a real chain always exists — per the hard rule, the household must
+    keep functioning if the sophisticated algorithm fails, and that means
+    falling to the next *scheduler* tier, not straight past it to local
+    safe mode. ``FallbackChain`` sorts the result itself; order here does
+    not matter.
+    """
+    from surya_sync.scheduler.reactive import ReactiveScheduler
+    from surya_sync.scheduler.threshold import ThresholdScheduler
+
+    threshold = ThresholdScheduler(config.scheduler)
+    if name == "threshold":
+        return (threshold,)
+    if name == "reactive":
+        reactive = ReactiveScheduler(config.scheduler, config.solar.surplus_threshold_kw)
+        return (reactive, threshold)
+    raise ValueError(
+        f"scheduler.active is {name!r}, but only 'threshold' (Phase 2) and "
+        "'reactive' (Phase 3) are implemented"
+    )
 
 
 def run_scenarios(config: Config, versions: VersionStamp) -> int:
@@ -94,21 +125,18 @@ def run_scenarios(config: Config, versions: VersionStamp) -> int:
     a terminal loses its caveat immediately.
     """
     from surya_sync.experiments.runner import run_standard_set
-    from surya_sync.scheduler.threshold import ThresholdScheduler
     from surya_sync.simulator.scenarios import standard_set
 
-    if config.scheduler.active != "threshold":
-        print(
-            f"scheduler.active is {config.scheduler.active!r}, but only "
-            "'threshold' is implemented (Phase 2)",
-            file=sys.stderr,
-        )
+    try:
+        _build_schedulers(config.scheduler.active, config)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 4
 
     runs = run_standard_set(
         config,
         standard_set(config),
-        lambda: ThresholdScheduler(config.scheduler),
+        lambda: _build_schedulers(config.scheduler.active, config),
         config_hash=versions.config_hash,
     )
 
@@ -132,6 +160,78 @@ def run_scenarios(config: Config, versions: VersionStamp) -> int:
             f"{run.pump_energy_kwh:9.2f} {run.grid_energy_kwh:9.2f} {share:8.1f}"
         )
     return 0 if worst == 0 else 5
+
+
+def compare_schedulers(config: Config, versions: VersionStamp) -> int:
+    """Run threshold and reactive across the standard set and compare.
+
+    This is the Phase 3 exit criterion in executable form: grid-powered
+    pump energy, threshold vs. reactive, per scenario and aggregated. Every
+    number is **simulated**.
+
+    Each controller runs standalone here, with no fallback beneath it —
+    unlike ``run_scenarios``, which runs the real chain. A comparison is
+    supposed to isolate one algorithm's own decisions; a chain that quietly
+    handed cycles to threshold on any reactive hiccup would flatter
+    reactive's number without reactive having earned it.
+    """
+    from surya_sync.analytics.comparison import aggregate_grid_kwh, compare_grid_energy
+    from surya_sync.experiments.runner import run_standard_set
+    from surya_sync.simulator.scenarios import standard_set
+
+    scenarios = standard_set(config)
+    baseline_runs = run_standard_set(
+        config,
+        scenarios,
+        lambda: _build_schedulers("threshold", config)[0],
+        config_hash=versions.config_hash,
+    )
+    candidate_runs = run_standard_set(
+        config,
+        scenarios,
+        lambda: _build_schedulers("reactive", config)[0],
+        config_hash=versions.config_hash,
+    )
+
+    worst = max(
+        (len(run.violation_steps) for run in baseline_runs + candidate_runs),
+        default=0,
+    )
+    for run in baseline_runs + candidate_runs:
+        if run.violation_steps:
+            print(
+                f"WARNING: {run.scheduler_name} violates hard constraints in "
+                f"{run.scenario_name} ({len(run.violation_steps)} steps)",
+                file=sys.stderr,
+            )
+
+    rows = compare_grid_energy(baseline_runs, candidate_runs)
+    baseline_total, candidate_total = aggregate_grid_kwh(rows)
+
+    print("SIMULATED results — not physical measurements")
+    print(f"config_hash {versions.config_hash}   step {config.scheduler.step_minutes:g} min")
+    print(
+        f"{'scenario':10s} {'threshold_kWh':>14s} {'reactive_kWh':>13s} "
+        f"{'saved_kWh':>10s}"
+    )
+    for row in rows:
+        print(
+            f"{row.scenario_name:10s} {row.baseline_grid_kwh:14.2f} "
+            f"{row.candidate_grid_kwh:13.2f} {row.grid_kwh_saved:10.2f}"
+        )
+    print(
+        f"{'aggregate':10s} {baseline_total:14.2f} {candidate_total:13.2f} "
+        f"{baseline_total - candidate_total:10.2f}"
+    )
+    print(
+        "note: 'sunny' already draws 0.00 kWh from the grid under threshold "
+        "(Phase 2) and cannot be beaten — judge this exit criterion on "
+        "'cloudy', 'low_start' and the aggregate."
+    )
+
+    if worst:
+        return 5
+    return 0 if candidate_total < baseline_total else 6
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -171,6 +271,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"database          {config.storage.database_path}")
         return 0
+
+    if args.compare_schedulers:
+        # Same reasoning as --run-scenarios below: nothing here persists yet.
+        return compare_schedulers(config, versions)
 
     if args.run_scenarios:
         # Deliberately before the database is opened: a scenario run persists

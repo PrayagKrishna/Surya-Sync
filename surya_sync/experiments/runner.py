@@ -134,25 +134,40 @@ def build_control_cycle(
 def run_scenario(
     config: Config,
     scenario: Scenario,
-    scheduler: Scheduler,
+    scheduler: Scheduler | tuple[Scheduler, ...],
     resource_id: str = "tank_1",
     config_hash: str | None = None,
     cold_start: bool = False,
 ) -> ScenarioRun:
     """Run one controller through one scenario, start to finish.
 
+    ``scheduler`` accepts either a single ``Scheduler`` (Phase 2's call
+    shape, kept working unchanged) or a tuple of them. A tuple is a real
+    fallback chain, not several independent runs: ``FallbackChain`` sorts
+    it by tier and only drops to a lower one when the higher one raises,
+    reports a failing ``SolverStatus``, or breaches a hard constraint. A
+    scenario benchmarking one tier in isolation should still pass a tuple
+    of exactly that one scheduler rather than lean on the single-scheduler
+    form meaning "no fallback exists" — it doesn't; it means the chain has
+    one link. ``ScenarioRun.scheduler_name`` / ``algorithm_version`` name
+    the most sophisticated tier passed in, since that is "the controller
+    under test" even on cycles where it happened to fail over.
+
     ``cold_start`` boots the resource with unknown actuator timing, the way
     a Pi with no actuation log would. Off by default: a controller
     comparison must hold every condition identical, and this one changes
     the first hours of a run.
     """
+    schedulers = (scheduler,) if isinstance(scheduler, Scheduler) else tuple(scheduler)
+    primary = min(schedulers, key=lambda s: s.tier)
+
     simulator = scenario.build(config, resource_id=resource_id, cold_start=cold_start)
     resource = SimulatedTankResource(simulator)
     registry = ResourceRegistry(resources=(resource,))
-    cycle = build_control_cycle(config, registry, (scheduler,))
+    cycle = build_control_cycle(config, registry, schedulers)
 
     versions = VersionStamp(
-        scheduler_version=scheduler.algorithm_version, config_hash=config_hash
+        scheduler_version=primary.algorithm_version, config_hash=config_hash
     )
     state_manager = StateManager(mode=RunMode.SIMULATED, versions=versions)
     state_manager.begin_run(run_id=None, at=scenario.start)
@@ -201,8 +216,8 @@ def run_scenario(
     return ScenarioRun(
         scenario_name=scenario.name,
         scenario_version=scenario.scenario_version,
-        scheduler_name=scheduler.name,
-        algorithm_version=scheduler.algorithm_version,
+        scheduler_name=primary.name,
+        algorithm_version=primary.algorithm_version,
         config_hash=config_hash,
         step_minutes=step_minutes,
         steps=tuple(steps),

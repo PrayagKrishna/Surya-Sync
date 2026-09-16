@@ -44,6 +44,17 @@ closes.
   *Note from Phase 2: the threshold controller already draws 0.00 kWh from
   the grid in `sunny`, so that scenario cannot be beaten. Judge on `cloudy`
   (0.51 kWh), `low_start` (0.75 kWh) and the aggregate.*
+  *Measured [simulated], `--compare-schedulers`, standard set, 3 days:
+  `low_start` 0.75 -> 0.19 kWh, aggregate 1.64 -> 1.07 kWh, `sunny` tied at
+  0.00. `cloudy` and `spike` tie exactly (0.51 and 0.38 unchanged) — the
+  reactive scheduler only tops up on surplus that fully covers the pump's
+  rated draw (0.75 kW), so it never grid-subsidizes a partial-surplus start,
+  and neither scenario offers a full-coverage window before the
+  level-triggered run would fire anyway. Zero hard-constraint violations
+  across the standard set. **Decision (2026-09-16): phase stays open.** An
+  aggregate win with two scenarios tied is not enough to close it — push
+  further on `cloudy`/`spike` before starting Phase 4. See
+  `PROJECT_JOURNEY.md`.*
 
 - [ ] **Phase 4 — Temporal behaviour**
   Cyclic time encoding, historical slot means, lag/rolling features.
