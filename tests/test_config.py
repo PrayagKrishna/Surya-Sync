@@ -158,7 +158,7 @@ def test_run_scenarios_refuses_a_scheduler_it_does_not_have(tmp_path, capsys):
     path = tmp_path / "config.toml"
     path.write_text('[scheduler]\nactive = "mpc"\n', encoding="utf-8")
     assert main(["--config", str(path), "--run-scenarios"]) == 4
-    assert "only 'threshold' is implemented" in capsys.readouterr().err
+    assert "only 'threshold' (Phase 2) and 'reactive' (Phase 3)" in capsys.readouterr().err
 
 
 def test_a_scenario_run_does_not_need_a_database(tmp_path, capsys):

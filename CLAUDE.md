@@ -146,10 +146,49 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 2 complete. Threshold controller, safety layer, fallback chain and the
-shared control loop are in; 379 tests pass. Zero hard-constraint violations
-across the standard scenario set [simulated]. Phase 3 (solar-reactive
-control) is cleared to start.`
+`Phase: 3 in progress, deliberately kept open. ReactiveScheduler (Baseline C)
+is in, wired into a real (reactive -> threshold) fallback chain, with the
+comparison logged via analytics/comparison.py. 405 tests pass. Zero
+hard-constraint violations across the standard scenario set [simulated].
+Decision (2026-09-16, author's call): an aggregate win (1.64 -> 1.07 kWh)
+with cloudy and spike tied rather than improved is not enough to close the
+phase. Next session should push further on cloudy/spike before starting
+Phase 4 — see the carried-forward note below for why they tie and what
+would actually move them (a solar forecast, which is Phase 7's tool, so the
+fix has to stay inside what a current-surplus-only scheduler can honestly
+do).`
+
+Carried out of Phase 3:
+- **The reactive scheduler only tops up on surplus that fully covers the
+  pump's rated draw (0.75 kW), not any nonzero surplus.** Measured: a
+  first version that topped up on any surplus above the sensor-noise floor
+  (0.1 kW) *lost* to the threshold controller on `spike` (0.38 -> 0.51 kWh)
+  and `sunny` (0.00 -> 0.20 kWh) [simulated] — a partial surplus still
+  draws the rest from the grid, and those extra opportunistic starts were
+  grid draw the threshold controller's later, better-covered run would not
+  have needed. Requiring full coverage fixed both regressions with no
+  scenario worse than threshold, but leaves `cloudy` and `spike` tied
+  rather than improved (`ReactiveScheduler._has_surplus`,
+  `test_reactive_vs_threshold_scenarios.py`). A current-surplus scheduler
+  only earns the name if it declines a run the grid would have to
+  subsidize; getting `cloudy` to actually improve needs a solar *forecast*
+  to defer into a still-building surplus, which is Phase 7's job, not this
+  tier's.
+- **`ReasonCode.AWAITING_SOLAR` must never be emitted by this tier.** Its
+  own docstring is "a better-lit window is forecast" — this scheduler reads
+  only `request.solar_surplus_kw`, never `request.solar_forecast`, so it
+  has no forecast to justify that reason. Pinned by
+  `test_it_never_emits_awaiting_solar`.
+- **`run_scenario`'s fallback chain was a chain of one.** Before this phase,
+  every call passed a single `Scheduler`, so `FallbackChain` never had a
+  second tier to fall to — harmless while threshold was the only tier that
+  existed, but it would have silently violated the hard rule ("the fallback
+  chain must always exist... down to local safe mode") the moment a second
+  tier was added. `run_scenario` now accepts a single scheduler or a tuple;
+  `main.py --run-scenarios` with `scheduler.active = "reactive"` now chains
+  (reactive, threshold), while `--compare-schedulers` still runs each tier
+  standalone on purpose — a comparison that let threshold quietly cover for
+  a reactive failure would flatter a number reactive did not earn.
 
 Carried out of Phase 2:
 - **`sunny` gives the threshold controller 100% solar already** (0.00 kWh
