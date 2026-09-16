@@ -566,6 +566,99 @@ simulated days `[simulated]`. 379 tests pass, up from 277 at `1fee0ea`.
 
 ---
 
+### 2026-09-16 — Phase 3, in progress: reactive solar scheduler — commit `77c19be`
+
+Phase 3's second controller, and the first time the fallback chain actually
+has two links in it. **Deliberately not closed** — see below.
+
+- **Built:**
+  - `scheduler/reactive.py` — `ReactiveScheduler`, tier 3, Baseline C. Same
+    hysteresis as the threshold controller, plus one new behaviour: top up
+    on current solar surplus (`request.solar_surplus_kw`) even above the
+    start threshold, as long as it does not overflow the ceiling.
+  - `analytics/comparison.py` — `compare_grid_energy` / `aggregate_grid_kwh`,
+    pairing two `ScenarioRun` sets by scenario name and refusing to compare
+    mismatched scenario sets.
+  - `main.py --compare-schedulers` — runs threshold and reactive standalone
+    across the standard set and prints the grid-energy table the exit
+    criterion is judged on.
+  - `experiments/runner.py` — `run_scenario` now takes a single `Scheduler`
+    *or* a tuple of them, so a real `FallbackChain` can be built from the
+    call site instead of always being a chain of one.
+
+- **Key decisions:**
+  - **Surplus must fully cover the pump's rated draw (0.75 kW) to count,
+    not just clear the sensor-noise floor (0.1 kW).** Measured first with
+    the looser rule: it *lost* to the threshold controller on `spike`
+    (0.38 -> 0.51 kWh) and `sunny` (0.00 -> 0.20 kWh) `[simulated]`, because
+    a partial surplus still draws the rest from the grid, and those extra
+    opportunistic starts were grid draw the threshold controller's later,
+    fully-covered run would not have needed. Tightening the rule to require
+    full coverage fixed both regressions.
+  - **`ReasonCode.AWAITING_SOLAR` is never emitted by this tier.** Its own
+    docstring says "a better-lit window is *forecast*"; this scheduler reads
+    only the current instant and has no forecast to justify that reason.
+    Asserted by `test_it_never_emits_awaiting_solar`.
+  - **`--compare-schedulers` runs each controller standalone; `--run-scenarios`
+    runs the real chain.** A comparison that let threshold quietly cover for
+    a reactive failure would flatter a number reactive did not earn; a
+    production-shaped run needs the real fallback the hard rule requires.
+    `scheduler.active = "reactive"` now chains `(reactive, threshold)`.
+
+- **Problems hit:**
+  - **`run_scenario` had no second tier to fall back to, and nothing had
+    ever exercised that gap.** Every existing call passed one `Scheduler`;
+    it worked only because threshold was the only tier that existed. The
+    hard rule ("the household must keep functioning if the sophisticated
+    algorithm fails ... down to local safe mode") would have been silently
+    violated the moment `reactive` shipped without this fix — a real bug an
+    already-green test suite could not have caught, since nothing before
+    this phase had two tiers to check the handoff between.
+  - **An idle full tank with no demand forecast could still be proposed a
+    RUN for surplus.** The overflow guard for the opportunistic top-up
+    relied on the one-step lookahead, which is unavailable with no
+    forecast (documented, accepted behaviour for tier 4 too) — but tier 4
+    never runs above its start threshold in the first place, so it never
+    needed the ceiling checked twice. Tier 3 does run above it, so the
+    ceiling is now checked directly in the decision, not only in the
+    lookahead. Caught by probing, not by a written requirement; pinned by
+    `test_a_full_idle_tank_never_starts_for_surplus_even_with_no_forecast`.
+
+- **Measured and carried forward, not fixed:**
+  - **`cloudy` and `spike` tie exactly (0.51 and 0.38 kWh) rather than
+    improve.** `[simulated]`, `--compare-schedulers`, standard set. A
+    current-surplus scheduler can only act on a window wide and strong
+    enough to fully cover the pump *right now*; neither scenario offers one
+    before the level-triggered run would fire anyway, and the fix (pulling
+    a run forward through a still-building surplus) needs a solar
+    *forecast* — Phase 7's tool, not this tier's. `low_start` improved from
+    0.75 to 0.19 kWh and the aggregate from 1.64 to 1.07 kWh, both
+    `[simulated]`. Zero hard-constraint violations across the standard set.
+
+- **Checked and found compliant, no change:** the reactive scheduler never
+  reads `request.solar_forecast` (only `solar_surplus_kw`), matching its own
+  "current-surplus only" docstring; it never calls `resource.observe()`;
+  every plan still carries a `DecisionExplanation`. 405 tests pass, up from
+  379.
+
+- **AI assistance:** Claude Code implemented the scheduler, the comparison
+  module, the `run_scenario` fallback-chain fix, and all new tests; found
+  the surplus-threshold regression and the fallback-chain gap by measuring
+  and probing rather than being told to look for either. The author's
+  calls: requiring solar-forecast-based deferral to stay out of this tier
+  (keeping it a genuine current-surplus baseline rather than smuggling
+  Phase 7 in early), and — after seeing the `cloudy`/`spike` tie — **keeping
+  Phase 3 open rather than accepting an aggregate win as sufficient**,
+  overriding the AI's recommendation to close it.
+
+- **Open questions carried forward:** what, if anything, a still-tier-3
+  scheduler can legitimately do about `cloudy`/`spike` without reading a
+  solar forecast — or whether the honest answer is that it cannot, and
+  Phase 3 closes on the aggregate result once that is confirmed rather than
+  chased further.
+
+---
+
 ## Maintaining this file
 
 1. Add an entry at the end of every phase, and at the end of any session that
