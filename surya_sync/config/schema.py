@@ -152,6 +152,42 @@ class StorageConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TemporalConfig:
+    """Knobs for ``temporal/`` and ``ml.features.builder``.
+
+    Does not change the feature vector's *shape* — ``FEATURE_NAMES`` is
+    code, not config, because a model trained on one ordering cannot be
+    fed another. This only tunes how the values are computed.
+    """
+
+    slot_minutes: float = 15.0
+    """Must divide 1440 evenly — see ``temporal.context.slots_per_day``."""
+
+    profile_min_samples: int = 3
+    """Below this many samples, a slot's historical mean reports unknown
+    rather than an echo of one or two days."""
+
+    history_days: int = 28
+    """How much observation history a caller should keep on hand to build
+    features. The longest lag feature reaches back 7 days; 28 leaves room
+    for a 24h rolling window computed from a sample 7 days back."""
+
+    def __post_init__(self) -> None:
+        if self.slot_minutes <= 0:
+            raise ConfigError("temporal.slot_minutes must be > 0")
+        slots = 1440.0 / self.slot_minutes
+        if slots != int(slots):
+            raise ConfigError("temporal.slot_minutes must divide 1440 evenly")
+        if self.profile_min_samples < 1:
+            raise ConfigError("temporal.profile_min_samples must be >= 1")
+        if self.history_days < 7:
+            raise ConfigError(
+                "temporal.history_days must be >= 7 — the longest lag "
+                "feature (demand_lag_7_day) needs a full week of history"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class LoggingConfig:
     level: str = "INFO"
     file_path: str | None = None
@@ -173,6 +209,7 @@ class Config:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     hardware: HardwareConfig = field(default_factory=HardwareConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    temporal: TemporalConfig = field(default_factory=TemporalConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     def __post_init__(self) -> None:

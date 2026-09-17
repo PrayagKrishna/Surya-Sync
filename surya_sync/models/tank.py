@@ -28,6 +28,7 @@ from surya_sync.domain import (
     ControlAction,
     Forecast,
     Provenance,
+    TimedValue,
     forecast_value_at,
 )
 from surya_sync.models.generic_resource import (
@@ -319,6 +320,93 @@ def predict_tank_trajectory(
         )
 
     return tuple(states)
+
+
+_BOUNDARY_TOLERANCE = 1e-9
+"""``service_level`` is exactly 0.0 or 1.0 at a clamp, by construction of
+``TankModel``'s own ``_clamp``. The tolerance only guards against a real
+sensor reporting a level that rounds to the boundary without having
+actually clamped."""
+
+
+def observed_demand_lpm(
+    previous: ResourceObservation,
+    current: ResourceObservation,
+    pump: PumpModel,
+) -> float | None:
+    """Recover the household draw between two consecutive readings.
+
+    The inverse of ``TankModel.step``: given the volume change and the
+    inflow the pump delivered, ``demand_lpm = inflow_lpm - (v1 - v0) / dt``.
+    ``previous.actuator_on`` governs, matching how
+    ``predict_tank_trajectory`` holds one action across a step.
+
+    Returns ``None`` — never a number — when the interval is not
+    identifiable:
+
+    - either reading has ``sensor_valid=False``
+    - the elapsed time is not positive
+    - the tank ended the interval at capacity while the pump ran (a spill
+      may have absorbed inflow the volume change cannot show, so the raw
+      arithmetic would *overstate* demand by however much spilled)
+    - the tank ended the interval empty (unmet demand may have absorbed
+      draw the volume change cannot show, so the raw arithmetic would
+      only be a lower bound on the true demand)
+
+    ``TankModel.step`` clamps into ``[0, capacity_l]`` precisely so a
+    trajectory cannot show volumes outside the tank; that clamp is what
+    makes both cases undecidable here rather than merely imprecise.
+    """
+    if previous.resource_id != current.resource_id:
+        raise ValueError(
+            f"observations are for different resources: "
+            f"{previous.resource_id!r} vs {current.resource_id!r}"
+        )
+    if not previous.sensor_valid or not current.sensor_valid:
+        return None
+
+    dt_minutes = (current.timestamp - previous.timestamp).total_seconds() / 60.0
+    if dt_minutes <= 0.0:
+        return None
+
+    inflow_lpm = pump.inflow_lpm(previous.actuator_on)
+    if current.service_level >= 1.0 - _BOUNDARY_TOLERANCE and inflow_lpm > 0.0:
+        return None
+    if current.service_level <= _BOUNDARY_TOLERANCE:
+        return None
+
+    volume_change = current.native_value - previous.native_value
+    return inflow_lpm - volume_change / dt_minutes
+
+
+def observed_demand_series(
+    observations: tuple[ResourceObservation, ...],
+    pump: PumpModel,
+) -> tuple[TimedValue, ...]:
+    """Derive a chronological demand series from raw tank observations.
+
+    Walks consecutive pairs and skips any interval ``observed_demand_lpm``
+    cannot identify (overflow or run-dry) rather than inserting a guess —
+    a gap in the derived series stays a gap, so a time-based lag lookup
+    reports it honestly instead of silently reading the wrong instant.
+
+    Each value is stamped at the interval's *start*, matching
+    ``SimulationStep.demand_lpm`` (the realized draw at ``step.start``).
+    ``observations`` must already be chronological; this does not sort.
+    """
+    values: list[TimedValue] = []
+    for previous, current in zip(observations, observations[1:]):
+        if previous.timestamp >= current.timestamp:
+            raise ValueError(
+                "observed_demand_series requires chronological input, got "
+                f"{previous.timestamp} before {current.timestamp}"
+            )
+        demand_lpm = observed_demand_lpm(previous, current, pump)
+        if demand_lpm is None:
+            continue
+        values.append(TimedValue(at=previous.timestamp, value=demand_lpm))
+
+    return tuple(values)
 
 
 def _clamp(value: float, low: float, high: float) -> float:

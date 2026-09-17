@@ -741,6 +741,92 @@ that entry's "keep it open" call — linked back here, not edited there.
 
 ---
 
+### 2026-09-17 — Phase 4 closed: temporal feature engineering
+
+`temporal/` and `ml/features/builder.py` were five docstring-only stubs
+going in. Phase 5 (demand ML) cannot start without a feature vector and a
+target to train it against; this phase builds both.
+
+- **Section 12 does not exist in this repo.** `ROADMAP.md`'s Phase 4 exit
+  criterion names a feature list from an external design doc; nothing
+  greps for it anywhere in the codebase. Decision, made with the author:
+  pin an 18-feature list as code (`ml.features.builder.FEATURE_NAMES`,
+  fixed order — cyclic time-of-day/day-of-week/day-of-year, weekend flag,
+  slot index, per-slot historical mean and sample count, three time-based
+  demand lags, three rolling demand stats, current service level and its
+  1-hour delta) and test it exactly, rather than block on a document
+  nobody could locate. If section 12 turns up later, the pinned-order test
+  is the diff point.
+
+- **Built:**
+  - `domain.py` — `TimedValue`, the measured twin of `ForecastPoint`.
+  - `models/tank.py` — `observed_demand_lpm` / `observed_demand_series`,
+    the inverse of `TankModel.step`. Returns `None` rather than a number
+    when an interval ended at capacity (pump on) or at empty — the same
+    clamp that protects a predicted trajectory also destroys the
+    information the inverse needs at those two boundaries, and guessing
+    there would silently mis-report exactly the intervals with a spill or
+    an unmet-demand event, which are the ones that matter most to a
+    demand model.
+  - `temporal/context.py` — cyclic time encoding; `temporal/profiles.py`
+    — per-(day-type, slot) historical means, weekday/weekend kept
+    separate; `temporal/history.py` — time-based (not index-based),
+    strictly-past-only lag and rolling features.
+  - `ml/features/builder.py` — assembles the 18-value `FeatureVector`.
+  - `storage/repositories.py` — `ObservationRepository.history()`, the
+    one `NotImplementedError` in the repo explicitly tagged Phase 4, and
+    the first repository method in the project with real code behind it.
+    Added an optional `provenance` filter (backwards-compatible, keyword,
+    defaulted to "everything," matching the prior unimplemented
+    signature's implied behavior) — from Phase 13 onward measured and
+    simulated rows coexist per resource, and training data built from a
+    silent mixture would have no way to tell which instrument produced
+    which sample.
+  - `config/schema.py`, `config/loader.py`, `config/default.toml` — a
+    `[temporal]` section (`slot_minutes`, `profile_min_samples`,
+    `history_days`). Moves `config_hash` for every config, as intended.
+  - `tests/test_temporal.py` (new, 28 tests), `tests/test_repositories.py`
+    (new, 5 tests), plus `[temporal]` rejection cases added to
+    `tests/test_config.py`.
+
+- **Measured** `[simulated]`: 449 tests pass, up from 412.
+  `--run-scenarios` reproduces Phase 2's exact figures unchanged —
+  `sunny` 0.56/0.00, `cloudy` 0.56/0.51, `spike` 0.94/0.38, `low_start`
+  0.75/0.75 kWh pump/grid — confirming Phase 4 fed nothing into the
+  scheduling decision path, as designed (ML answers "what will likely
+  happen," the optimizer answers "should the pump run now," and Phase 4
+  is entirely on the ML side of that line). A `standard_set` run (Monday
+  start, 3 days) was confirmed to supply zero weekend samples to the slot
+  profile, which correctly reports every weekend slot as unknown rather
+  than borrowing the weekday mean
+  (`test_a_standard_set_run_leaves_every_weekend_slot_unknown`). The
+  derived-demand path round-trips `TankModel.step` exactly for
+  non-clamped intervals and matches the simulator's own ground-truth
+  `SimulationStep.demand_lpm` across a full scenario run within floating
+  point tolerance.
+
+- **Decision:** `temporal/adaptation.py` (slow recency-weighted adaptation
+  of profiles) stays a stub. It is not in Phase 4's exit criteria, and it
+  cannot be shown to help until Phase 5 has a demand model to measure it
+  against — building it now would be tuning against nothing. The author
+  confirmed leaving it out rather than building it speculatively.
+
+- **AI assistance:** Claude Code explored the existing simulator/storage/
+  config layers before designing, proposed the pinned 18-feature list and
+  the adaptation-stays-a-stub scope cut (both presented via plan mode and
+  confirmed by the author before implementation), wrote all new modules
+  and tests, and updated `ROADMAP.md`/`CLAUDE.md`/`README.md`. The
+  author's calls: choosing to pin a feature list in code rather than
+  chase down the missing external doc, and confirming the adaptation
+  scope cut.
+
+- **Open questions carried forward:** none for Phase 4. Phase 5 inherits
+  the feature vector and the derived-demand series as its starting
+  inputs, plus the expected gaps at spill/run-dry intervals as a known,
+  non-bug property of the training data.
+
+---
+
 ## Maintaining this file
 
 1. Add an entry at the end of every phase, and at the end of any session that

@@ -40,6 +40,15 @@ PV_MODEL_VERSION = "1.0.0"
 attribution rule in ``simulator/``. Refined in Phase 6, when a forecast
 replaces the geometry."""
 
+FEATURE_SET_VERSION = "features-1.0.0"
+"""``ml.features.builder.FEATURE_NAMES`` — the ordering and definition of
+the feature vector. Not a ``VersionStamp`` field: every ``VersionStamp``
+field maps to a ``component_versions`` column, and nothing persists a
+feature vector yet in Phase 4, so adding one would force a schema bump for
+a value with nowhere to be read from. Follows the precedent of
+``forecasts.model_version``, which is stored per-row once Phase 5 has rows
+to store it on."""
+
 
 @dataclass(frozen=True, slots=True)
 class VersionStamp:

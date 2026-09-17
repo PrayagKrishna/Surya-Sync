@@ -85,10 +85,24 @@ closes.
   none regress), and the author confirmed closing on this evidence. See
   `PROJECT_JOURNEY.md`.*
 
-- [ ] **Phase 4 — Temporal behaviour**
+- [x] **Phase 4 — Temporal behaviour** ✅
   Cyclic time encoding, historical slot means, lag/rolling features.
   Exit: `temporal/` produces feature vectors matching section 12's feature
   list; tests for temporal encoding pass.
+  *Met: "section 12" is not in this repo (greps clean), so the 18-feature
+  list is pinned as code — `ml.features.builder.FEATURE_NAMES` — and
+  `test_feature_names_match_the_pinned_spec_exactly_and_in_order` is the
+  exit-criterion test. `temporal/context.py` (cyclic time-of-day/
+  day-of-week/day-of-year encoding), `temporal/profiles.py` (per-slot
+  historical means, weekday/weekend kept separate), `temporal/history.py`
+  (time-based, gap-aware lag and rolling features) and
+  `ml/features/builder.py` (the 18-value vector) are all implemented.
+  `ObservationRepository.history()` — the one `NotImplementedError` in the
+  repo explicitly tagged Phase 4 — is also implemented, with an added
+  `provenance` filter. 449 tests pass, up from 412. `--run-scenarios`
+  reproduces Phase 2's exact figures unchanged, confirming nothing leaked
+  into the decision path. `temporal/adaptation.py` stays a stub —
+  deliberately out of scope; see the carried-forward note below.*
 
 - [ ] **Phase 5 — Demand ML**
   Mean baseline → linear regression → random forest → gradient boosting.

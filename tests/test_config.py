@@ -72,6 +72,10 @@ def test_run_mode_parsed_to_enum():
         ("scheduler", {"safety_reserve_level": 1.5}, "safety_reserve_level"),
         ("hardware", {"max_missed_telemetry": 0}, "must be > 0"),
         ("storage", {"database_path": ""}, "must not be empty"),
+        ("temporal", {"slot_minutes": 7.0}, "divide 1440 evenly"),
+        ("temporal", {"slot_minutes": 0.0}, "must be > 0"),
+        ("temporal", {"profile_min_samples": 0}, "must be >= 1"),
+        ("temporal", {"history_days": 3}, "must be >= 7"),
         ("logging", {"level": "CHATTY"}, "logging.level"),
     ],
 )

@@ -105,6 +105,20 @@ class Horizon:
 
 
 @dataclass(frozen=True, slots=True)
+class TimedValue:
+    """A single measured/derived value at an instant.
+
+    The measured twin of ``ForecastPoint`` — no band, no target name, just
+    a fact about the past rather than a prediction about the future.
+    Lives here rather than in ``temporal/`` so ``models/`` can produce it
+    without importing a higher layer.
+    """
+
+    at: datetime
+    value: float
+
+
+@dataclass(frozen=True, slots=True)
 class ForecastPoint:
     """A single forecast value with its uncertainty band.
 

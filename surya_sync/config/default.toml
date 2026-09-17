@@ -52,5 +52,10 @@ max_missed_telemetry = 5
 database_path = "data/surya_sync.db"
 retain_telemetry_days = 365
 
+[temporal]
+slot_minutes = 15.0                # must divide 1440 evenly
+profile_min_samples = 3            # below this, a slot's mean reports unknown
+history_days = 28                  # >= 7: the longest lag feature needs a week
+
 [logging]
 level = "INFO"
