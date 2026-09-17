@@ -77,8 +77,9 @@ Actively in development, following a 16-phase roadmap (see [`ROADMAP.md`](ROADMA
 | 0 | Architecture, interfaces, config, DB schema | ✅ Complete |
 | 1 | Simulator (tank, pump, demand, solar, grid) | ✅ Complete |
 | 2 | Conventional threshold control, safety layer, control loop | ✅ Complete |
-| 3 | Solar-reactive control | 🚧 Next |
-| 4–16 | Temporal learning → ML → MPC → hardware → frontend | ⬜ Not started |
+| 3 | Solar-reactive control | ✅ Complete |
+| 4 | Temporal feature engineering | ✅ Complete |
+| 5–16 | ML → MPC → hardware → frontend | 🚧 Next |
 
 The first scheduler exists as of Phase 2: a conventional threshold
 controller, which is the **baseline** every later phase has to beat, not the

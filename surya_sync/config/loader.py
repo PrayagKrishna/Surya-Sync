@@ -28,6 +28,7 @@ from surya_sync.config.schema import (
     StorageConfig,
     SystemConfig,
     TankConfig,
+    TemporalConfig,
     to_dict,
 )
 from surya_sync.domain import RunMode
@@ -42,6 +43,7 @@ _SECTIONS: dict[str, type] = {
     "scheduler": SchedulerConfig,
     "hardware": HardwareConfig,
     "storage": StorageConfig,
+    "temporal": TemporalConfig,
     "logging": LoggingConfig,
 }
 

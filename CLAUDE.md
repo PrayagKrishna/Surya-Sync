@@ -146,18 +146,68 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 3 complete. ReactiveScheduler (Baseline C) is in, wired into a real
-(reactive -> threshold) fallback chain, with the comparison logged via
-analytics/comparison.py. 412 tests pass. Zero hard-constraint violations
-across the standard set and the extended set, at every duration checked
-(3-60 days) [simulated]. Closed on the extended_set result (30 days, five
-scenarios incl. the new `monsoon`): reactive beats threshold on low_start,
-spike, sunny and the aggregate (21.537 -> 15.872 kWh), and ties (never
-loses) on cloudy/monsoon for a stated structural reason. The first
-close-or-not-yet call was made against a 3-day comparison that turned out
-to be too short a window (spike/sunny looked tied and were not) — see the
-carried-forward note below before trusting a short scenario run's "tie"
-again. Phase 4 (temporal behaviour) is cleared to start.`
+`Phase: 4 complete. temporal/context.py (cyclic time encoding),
+temporal/profiles.py (per-slot historical means) and temporal/history.py
+(time-based lag/rolling features) are implemented, feeding
+ml/features/builder.py's 18-value FeatureVector. ObservationRepository.history()
+is implemented — the first repository method with real code in the
+project. 449 tests pass, up from 412. --run-scenarios reproduces Phase 2's
+exact figures unchanged (0.56/0.00, 0.56/0.51, 0.94/0.38, 0.75/0.75 kWh
+pump/grid across sunny/cloudy/spike/low_start), confirming Phase 4 fed
+nothing into the decision path. temporal/adaptation.py stays a stub — see
+the carried-forward note below. Phase 5 (demand ML) is cleared to start:
+it now has a feature vector and, via models.tank.observed_demand_series, a
+target to train against.`
+
+Carried out of Phase 4:
+- **"Section 12" is not in this repo.** `ROADMAP.md` Phase 4's exit
+  criterion names a feature list from an external design doc that greps
+  turn up nowhere in the codebase. Decision: the 18-feature list is
+  pinned as code (`ml.features.builder.FEATURE_NAMES`, fixed order) and
+  tested exactly (`test_feature_names_match_the_pinned_spec_exactly_and_in_order`).
+  If section 12 turns up later, that test is the diff point — don't
+  silently reorder the vector to match it without checking what already
+  depends on the current order.
+- **`TankModel.step`'s clamp destroys exactly the information its own
+  inverse needs.** `models.tank.observed_demand_lpm` recovers demand from
+  two consecutive tank readings, but when an interval ends at capacity
+  (with the pump on) or at empty, the clamp that protects the trajectory
+  is the same clamp that makes the true demand unrecoverable — spill or
+  unmet demand could have absorbed any amount, and the raw arithmetic
+  would silently mis-report by that amount. Both cases return `None`
+  rather than a number that looks plausible and isn't
+  (`test_an_overflowing_interval_is_unidentifiable`,
+  `test_a_run_dry_interval_is_unidentifiable`). Phase 5's training data
+  will have gaps at exactly the demand spikes and dry-outs that matter
+  most — expected, not a bug to "fix" by guessing.
+- **A `standard_set` run (Monday start, 3 days) supplies zero weekend
+  samples.** `temporal.profiles.SlotProfile` keeps weekday/weekend
+  separate because `DiurnalDemandProfile` already scales them
+  differently, and a profile built from a standard-set run must report
+  every weekend slot as unknown rather than borrowing the weekday mean —
+  pinned by `test_a_standard_set_run_leaves_every_weekend_slot_unknown`.
+  Use `extended_set` (30 days) for anything that needs weekend coverage.
+- **The feature vector is not on `SchedulingRequest`.** Temporal features
+  feed a Phase 5 model, the model emits a `Forecast`, and the `Forecast`
+  is what the request carries — adding raw features to the request would
+  let a scheduler read them directly and merge the ML/optimizer layers
+  CLAUDE.md keeps apart. `FEATURE_SET_VERSION` similarly lives in
+  `version.py` as a module constant, not on `VersionStamp` — every
+  `VersionStamp` field maps to a `component_versions` column, and nothing
+  persists a feature vector yet, so adding one would force a schema bump
+  for a value with nowhere to be read from.
+- **`ObservationRepository.history()` takes an optional `provenance`
+  filter, added to the Phase-0-declared signature.** From Phase 13 the
+  `resource_observations` table holds measured and simulated rows for the
+  same resource side by side; `provenance=None` (the default) returns
+  both, unchanged from what the original signature implied, and a caller
+  that cares — training data, in particular — must filter explicitly
+  rather than get a silent mixture with no way to tell which row came
+  from which instrument.
+- **`temporal/adaptation.py` stays a stub, on purpose.** Recency
+  weighting on `SlotProfile` cannot be shown to help until a demand model
+  exists to measure it against — that's Phase 5. Building it now would be
+  tuning against nothing.
 
 Carried out of Phase 3:
 - **3 days was too short a benchmark window; `extended_set` (30 days, five

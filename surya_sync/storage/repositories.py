@@ -88,14 +88,38 @@ class ObservationRepository(Repository):
         raise NotImplementedError("Phase 1 — see ROADMAP.md")
 
     def history(
-        self, resource_id: str, since: datetime, until: datetime
+        self,
+        resource_id: str,
+        since: datetime,
+        until: datetime,
+        provenance: Provenance | None = None,
     ) -> tuple[ResourceObservation, ...]:
-        """Observations in chronological order.
+        """Observations in chronological order, ``since <= timestamp < until``.
 
         Time-series validation is always walk-forward, so history is
         returned ordered and never shuffled downstream.
+
+        ``provenance=None`` returns every row regardless of provenance.
+        From Phase 13 onward, measured and simulated rows for the same
+        resource can coexist in this table; a temporal feature built from
+        a silent mixture of the two would train on data with no way to
+        tell which instrument produced which sample, so a caller that
+        cares must filter explicitly rather than relying on a default.
         """
-        raise NotImplementedError("Phase 4 — see ROADMAP.md")
+        query = (
+            "SELECT timestamp, resource_id, service_level, native_value, "
+            "native_unit, actuator_on, sensor_valid, provenance "
+            "FROM resource_observations "
+            "WHERE resource_id = ? AND timestamp >= ? AND timestamp < ?"
+        )
+        params: list[object] = [resource_id, since.isoformat(), until.isoformat()]
+        if provenance is not None:
+            query += " AND provenance = ?"
+            params.append(provenance.value)
+        query += " ORDER BY timestamp ASC"
+
+        rows = self._db.connection.execute(query, params).fetchall()
+        return tuple(_observation_from_row(row) for row in rows)
 
 
 class ActuationRepository(Repository):
@@ -194,3 +218,16 @@ class MetricsRepository(Repository):
         experiment_id: int | None = None,
     ) -> None:
         raise NotImplementedError("Phase 3 — see ROADMAP.md")
+
+
+def _observation_from_row(row: object) -> ResourceObservation:
+    return ResourceObservation(
+        timestamp=datetime.fromisoformat(row["timestamp"]),
+        resource_id=row["resource_id"],
+        service_level=row["service_level"],
+        native_value=row["native_value"],
+        native_unit=row["native_unit"],
+        actuator_on=bool(row["actuator_on"]),
+        provenance=Provenance(row["provenance"]),
+        sensor_valid=bool(row["sensor_valid"]),
+    )
