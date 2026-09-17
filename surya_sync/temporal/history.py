@@ -98,7 +98,17 @@ class RollingStats:
 def rolling_stats(
     series: tuple[TimedValue, ...], now: datetime, window_minutes: float
 ) -> RollingStats | None:
-    """Mean/max over ``(now - window_minutes, now)``, exclusive of ``now``.
+    """Mean/max over ``[now - window_minutes, now)`` — inclusive of the far
+    edge, exclusive of ``now`` itself.
+
+    Regression: an earlier version excluded both edges, so on the ordinary
+    fixed-cadence control loop (samples every ``step_minutes``, a window
+    that is a whole multiple of it) the oldest sample landed exactly on
+    ``now - window_minutes`` and was silently dropped on *every* call —
+    a "1h rolling mean" reporting 3 samples instead of 4 at a 15-minute
+    step, not a rare edge case but the normal one.
+    ``test_rolling_window_includes_the_sample_exactly_at_its_far_edge``
+    pins this.
 
     ``None`` when the window contains no samples — an empty window
     averaged as zero would look like measured evidence of no demand,
@@ -108,7 +118,7 @@ def rolling_stats(
         raise ValueError("window_minutes must be > 0")
 
     start = now - timedelta(minutes=window_minutes)
-    values = [s.value for s in series if start < s.at < now]
+    values = [s.value for s in series if start <= s.at < now]
     if not values:
         return None
 

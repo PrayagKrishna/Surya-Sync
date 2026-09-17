@@ -146,18 +146,68 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 4 complete. temporal/context.py (cyclic time encoding),
-temporal/profiles.py (per-slot historical means) and temporal/history.py
-(time-based lag/rolling features) are implemented, feeding
-ml/features/builder.py's 18-value FeatureVector. ObservationRepository.history()
-is implemented — the first repository method with real code in the
-project. 449 tests pass, up from 412. --run-scenarios reproduces Phase 2's
-exact figures unchanged (0.56/0.00, 0.56/0.51, 0.94/0.38, 0.75/0.75 kWh
-pump/grid across sunny/cloudy/spike/low_start), confirming Phase 4 fed
-nothing into the decision path. temporal/adaptation.py stays a stub — see
-the carried-forward note below. Phase 5 (demand ML) is cleared to start:
-it now has a feature vector and, via models.tank.observed_demand_series, a
+`Phase: 4 complete, and hardened. temporal/context.py (cyclic time
+encoding), temporal/profiles.py (per-slot historical means) and
+temporal/history.py (time-based lag/rolling features) are implemented,
+feeding ml/features/builder.py's 18-value FeatureVector.
+ObservationRepository.history() is implemented — the first repository
+method with real code in the project. Asked directly whether Phase 4 had
+been thoroughly debugged, the honest answer was no — the same author had
+written the code and the tests. An adversarial probing pass then found
+five latent bugs (see below), all fixed; 455 tests pass, up from 412 (449
+before hardening). --run-scenarios reproduces Phase 2's exact figures
+unchanged (0.56/0.00, 0.56/0.51, 0.94/0.38, 0.75/0.75 kWh pump/grid across
+sunny/cloudy/spike/low_start), confirming Phase 4 fed nothing into the
+decision path. temporal/adaptation.py stays a stub — see the
+carried-forward note below. Phase 5 (demand ML) is cleared to start: it
+now has a feature vector and, via models.tank.observed_demand_series, a
 target to train against.`
+
+Carried out of Phase 4's hardening pass — five latent bugs, all found by
+probing rather than by the test suite the same author wrote alongside the
+code (same blind spot as Phase 1's `715db70`):
+- **`rolling_stats` silently dropped the oldest sample on every single
+  call at a normal control cadence, not as a rare edge case.** The window
+  excluded both edges; on a 15-minute step with a 60-minute window, the
+  4th sample lands exactly on `now - 60` and was being thrown out every
+  time. Fixed to `[now - window, now)` — inclusive of the far edge,
+  exclusive of `now`. Pinned by
+  `test_rolling_window_includes_the_sample_exactly_at_its_far_edge`.
+- **`build_feature_vector` took a separate `slot_minutes` argument
+  alongside `slot_profile`, and nothing stopped them disagreeing** —
+  `slot_index` computed on one grid, `slot_mean_demand_lpm` looked up on
+  the profile's own different one, silently, in the same vector. Fixed by
+  deleting the redundant argument; the slot grid now comes from
+  `slot_profile.slot_minutes` alone, structurally, not by a runtime check.
+  Pinned by `test_the_slot_grid_comes_only_from_the_profile_no_separate_argument`.
+- **`observed_demand_lpm` returned `None` for a reversed pair — the same
+  branch as a genuinely zero-duration interval — instead of raising.** A
+  caller passing `current` before `previous` has a bug, not an
+  unidentifiable interval, and `observed_demand_series` already raised for
+  the equivalent condition; the single-pair function now matches it.
+  `dt == 0` (truly degenerate, not a caller mistake) still returns `None`.
+  Pinned by `test_a_reversed_pair_raises_rather_than_returns_unknown` and
+  `test_two_readings_at_the_same_instant_are_unidentifiable_not_an_error`.
+- **`observed_demand_lpm` never checked `native_unit`** — the same failure
+  class `require_demand_forecast` exists to prevent on the `Forecast`
+  side (a PV series read as demand), just missing on the raw-observation
+  side. Now raises unless both readings are litres (case-insensitive —
+  the simulator writes `"l"`). Pinned by
+  `test_a_non_litres_reading_is_rejected`.
+- **`TimedValue` and `FeatureVector` carried no provenance at all** — a
+  hard-rule violation ("distinguish Measured / Simulated / Predicted /
+  Estimated / Derived in all logs and reports"), found on a fresh re-read
+  of `CLAUDE.md` against the diff, not by probing. `TimedValue.provenance`
+  is now required (no default, matching `ResourceObservation`);
+  `observed_demand_series` stamps its output `Provenance.DERIVED` — the
+  same category CLAUDE.md's own example ("mm -> litres") names.
+  `FeatureVector.provenance` is a single top-level flag, not one per
+  feature, mirroring `SchedulingRequest.provenance` — a cyclic-time
+  feature has no data-quality question to answer, and the demand/
+  service-level features all come from the same caller-assembled history.
+  Pinned by `test_derived_demand_is_stamped_as_derived_provenance` and
+  the `provenance` assertion in
+  `test_a_feature_vector_carries_its_names_values_and_version_in_lockstep`.
 
 Carried out of Phase 4:
 - **"Section 12" is not in this repo.** `ROADMAP.md` Phase 4's exit

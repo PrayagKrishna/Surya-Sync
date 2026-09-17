@@ -47,6 +47,16 @@ read kW as litres per minute and produce a trajectory that looks entirely
 plausible — see ``require_demand_forecast``.
 """
 
+NATIVE_UNIT_LITRES = "l"
+"""The only ``ResourceObservation.native_unit`` the tank's physics can
+consume — same failure mode as ``WATER_DEMAND_TARGET``, one level closer to
+the sensor: nothing in the type system stops a caller handing
+``observed_demand_lpm`` two readings labelled ``"kW"``, and the arithmetic
+would produce a plausible-looking number regardless. Compared
+case-insensitively, since ``SimulatedTankResource`` writes ``"l"`` but
+nothing enforces a single casing at the point of construction.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class TankStep:
@@ -341,11 +351,21 @@ def observed_demand_lpm(
     ``previous.actuator_on`` governs, matching how
     ``predict_tank_trajectory`` holds one action across a step.
 
-    Returns ``None`` — never a number — when the interval is not
-    identifiable:
+    Raises ``ValueError`` for a genuine caller mistake — mismatched
+    resources, readings not in litres, or ``current`` at or before
+    ``previous`` (which ``observed_demand_series`` never passes, since it
+    checks order itself before calling in here; a direct caller handing
+    this function a reversed pair has a bug, not an unidentifiable
+    interval, and deserves a loud failure rather than a plausible-looking
+    ``None``).
+
+    Returns ``None`` — never a number — when the interval genuinely
+    cannot identify demand:
 
     - either reading has ``sensor_valid=False``
-    - the elapsed time is not positive
+    - the elapsed time is exactly zero (two readings at the same instant;
+      arithmetically degenerate, not a caller mistake the way a *negative*
+      interval is)
     - the tank ended the interval at capacity while the pump ran (a spill
       may have absorbed inflow the volume change cannot show, so the raw
       arithmetic would *overstate* demand by however much spilled)
@@ -355,18 +375,32 @@ def observed_demand_lpm(
 
     ``TankModel.step`` clamps into ``[0, capacity_l]`` precisely so a
     trajectory cannot show volumes outside the tank; that clamp is what
-    makes both cases undecidable here rather than merely imprecise.
+    makes both boundary cases undecidable here rather than merely
+    imprecise.
     """
     if previous.resource_id != current.resource_id:
         raise ValueError(
             f"observations are for different resources: "
             f"{previous.resource_id!r} vs {current.resource_id!r}"
         )
+    for observation in (previous, current):
+        if observation.native_unit.lower() != NATIVE_UNIT_LITRES:
+            raise ValueError(
+                f"expected native_unit {NATIVE_UNIT_LITRES!r}, got "
+                f"{observation.native_unit!r}; this function reads "
+                "native_value as litres"
+            )
+    if current.timestamp < previous.timestamp:
+        raise ValueError(
+            f"current ({current.timestamp}) is before previous "
+            f"({previous.timestamp}) — observed_demand_lpm requires "
+            "previous, current in chronological order"
+        )
     if not previous.sensor_valid or not current.sensor_valid:
         return None
 
     dt_minutes = (current.timestamp - previous.timestamp).total_seconds() / 60.0
-    if dt_minutes <= 0.0:
+    if dt_minutes == 0.0:
         return None
 
     inflow_lpm = pump.inflow_lpm(previous.actuator_on)
@@ -404,7 +438,9 @@ def observed_demand_series(
         demand_lpm = observed_demand_lpm(previous, current, pump)
         if demand_lpm is None:
             continue
-        values.append(TimedValue(at=previous.timestamp, value=demand_lpm))
+        values.append(
+            TimedValue(at=previous.timestamp, value=demand_lpm, provenance=Provenance.DERIVED)
+        )
 
     return tuple(values)
 

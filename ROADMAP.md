@@ -99,10 +99,17 @@ closes.
   `ml/features/builder.py` (the 18-value vector) are all implemented.
   `ObservationRepository.history()` — the one `NotImplementedError` in the
   repo explicitly tagged Phase 4 — is also implemented, with an added
-  `provenance` filter. 449 tests pass, up from 412. `--run-scenarios`
-  reproduces Phase 2's exact figures unchanged, confirming nothing leaked
-  into the decision path. `temporal/adaptation.py` stays a stub —
-  deliberately out of scope; see the carried-forward note below.*
+  `provenance` filter. Asked directly whether Phase 4 had been thoroughly
+  debugged, the honest answer was no; an adversarial probing pass then
+  found and fixed five latent bugs (a rolling-window boundary that
+  systematically dropped a sample at normal cadence, a silent
+  slot-grid-mismatch footgun, a caller error swallowed as "unidentifiable"
+  instead of raised, a missing unit check, and a missing provenance tag —
+  see `CLAUDE.md`'s Phase 4 hardening notes). 455 tests pass, up from 412
+  (449 before hardening). `--run-scenarios` reproduces Phase 2's exact
+  figures unchanged, confirming nothing leaked into the decision path.
+  `temporal/adaptation.py` stays a stub — deliberately out of scope; see
+  the carried-forward note below.*
 
 - [ ] **Phase 5 — Demand ML**
   Mean baseline → linear regression → random forest → gradient boosting.

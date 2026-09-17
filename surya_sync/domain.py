@@ -112,10 +112,17 @@ class TimedValue:
     a fact about the past rather than a prediction about the future.
     Lives here rather than in ``temporal/`` so ``models/`` can produce it
     without importing a higher layer.
+
+    ``provenance`` has no default, matching ``ResourceObservation`` — the
+    hard rule ("distinguish Measured / Simulated / Predicted / Estimated /
+    Derived in all logs and reports") applies to a bare number just as
+    much as to a named result, and a default would let a call site forget
+    to think about which one applies.
     """
 
     at: datetime
     value: float
+    provenance: Provenance
 
 
 @dataclass(frozen=True, slots=True)
