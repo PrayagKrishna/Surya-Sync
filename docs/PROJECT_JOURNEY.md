@@ -827,6 +827,89 @@ target to train it against; this phase builds both.
 
 ---
 
+### 2026-09-17 — Phase 4 hardened: five latent bugs — commit `ca3dc3e`
+
+Prompted by "have you properly and thoroughly debugged phase 4?" The
+honest answer was no — the same session had written the code and the
+tests, the same blind spot behind Phase 1's `715db70`. An adversarial
+probing pass (throwaway scripts attacking the code from outside the test
+suite) plus a fresh, line-by-line re-read of `CLAUDE.md` against the diff
+found five defects, none of them reachable by the existing 449 tests.
+
+- **Problems hit:**
+  - `temporal.history.rolling_stats` excluded both edges of its window.
+    **Root cause:** `start < s.at < now` instead of `start <= s.at < now`.
+    **Why it mattered:** on the project's normal 15-minute control step, a
+    60-minute rolling window's 4th sample lands exactly on
+    `now - 60`, so it was dropped on *every single call* — not a rare
+    edge case but the default one. **Fix:** `[now - window, now)`.
+  - `ml.features.builder.build_feature_vector` took a `slot_minutes`
+    argument separate from `slot_profile`. **Root cause:** the profile
+    already carries its own grid (`slot_profile.slot_minutes`), and
+    nothing enforced the two agreeing. **Why it mattered:** a profile
+    built on one grid and queried on another would silently put
+    `slot_index` and `slot_mean_demand_lpm` on different grids in the same
+    vector, with no error. **Fix:** deleted the argument; the grid now
+    comes from the profile alone, so the mismatch cannot occur rather than
+    being merely checked for.
+  - `models.tank.observed_demand_lpm` returned `None` for a reversed pair
+    (`current` before `previous`) — the same branch as a genuinely
+    zero-duration interval. **Root cause:** both were caught by
+    `dt <= 0`, collapsing a caller bug and a degenerate-but-legitimate
+    case into one meaning. **Why it mattered:** `observed_demand_series`
+    already raised for the equivalent condition; the single-pair function
+    silently disagreed. **Fix:** raise for `dt < 0`, keep `None` for
+    `dt == 0`.
+  - `observed_demand_lpm` never checked `native_unit`. **Root cause:** no
+    equivalent of `require_demand_forecast`'s target check existed on the
+    raw-observation side. **Why it mattered:** the exact failure class
+    Phase 1 found on the `Forecast` side (a PV series read as demand) was
+    open here too — any two readings, any unit, would produce a
+    plausible-looking number. **Fix:** raises unless both readings are
+    litres, checked case-insensitively against what
+    `SimulatedTankResource` actually writes (`"l"`).
+  - `TimedValue` and `FeatureVector` carried no `Provenance` at all.
+    **Root cause:** found on the `CLAUDE.md` re-read, not by probing — the
+    hard rule "distinguish Measured / Simulated / Predicted / Estimated /
+    Derived in all logs and reports" applies to a bare derived number just
+    as much as to a named result, and neither type had anywhere to put
+    one. **Why it mattered:** the derived-demand series and the feature
+    vector are this phase's actual deliverables; shipping them with no
+    data-quality tag at all is the exact thing the hard rule exists to
+    prevent, one layer earlier than where it was checked before. **Fix:**
+    `TimedValue.provenance` is now required (no default, matching
+    `ResourceObservation`); `observed_demand_series` stamps
+    `Provenance.DERIVED` — CLAUDE.md's own example of what that value
+    means ("mm -> litres"); `FeatureVector.provenance` is a single
+    top-level flag mirroring `SchedulingRequest.provenance`.
+- **Key decision:** the `slot_minutes` fix removes the footgun rather than
+  adding a check for it — an argument that cannot disagree with itself
+  beats one that is validated not to. `FeatureVector.provenance` is one
+  field for the whole vector, not one per feature, because a cyclic-time
+  feature is pure arithmetic on the clock with no data-quality question to
+  answer; only the observation-derived features do, and they share one
+  caller-assembled history.
+- **Checked and found correct, no change:** the two documented
+  conservative-`None` cases (interval ends at capacity with the pump on,
+  interval ends empty) still return `None` after the reversed-pair and
+  unit fixes, not accidentally promoted to a raise; `dt == 0` still
+  returns `None`; the boundary tolerance constant; the ISO-timestamp
+  lexicographic comparison `ObservationRepository.history()` relies on
+  (verified it is correct for every whole-second/sub-second mix, not just
+  the cases the tests happen to construct).
+- **Results:** 455 tests pass, up from 449. `--run-scenarios` reproduces
+  Phase 2's exact figures unchanged — the fixes are all on paths the
+  scheduling decision path does not touch.
+- **AI assistance:** the probing, the diagnosis and the fixes were Claude
+  Code's, in response to the author's direct challenge to the Phase 4
+  sign-off. The challenge is what produced them; the prior session had
+  reported the phase done.
+- **Open questions carried forward:** none new. Phase 5's derived-demand
+  input now carries `Provenance.DERIVED` throughout, which its training
+  pipeline should read and act on rather than discard.
+
+---
+
 ## Maintaining this file
 
 1. Add an entry at the end of every phase, and at the end of any session that
