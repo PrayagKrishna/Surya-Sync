@@ -39,6 +39,13 @@ MIDNIGHT = datetime(2026, 3, 2, 0, 0)
 RESOURCE_ID = "tank_1"
 
 
+def _tv(at, value, provenance=Provenance.SIMULATED) -> TimedValue:
+    """Shorthand for building test ``TimedValue`` fixtures — the provenance
+    rarely matters to what's being asserted, but the field is required
+    (no default), matching ``ResourceObservation``."""
+    return TimedValue(at=at, value=value, provenance=provenance)
+
+
 @pytest.fixture
 def config() -> Config:
     return Config()
@@ -117,19 +124,17 @@ def test_context_is_pure_in_time():
 
 def test_the_slot_mean_covers_only_matching_slots():
     samples = (
-        TimedValue(at=MIDNIGHT + timedelta(hours=10), value=10.0),
-        TimedValue(at=MIDNIGHT + timedelta(hours=10, minutes=5), value=20.0),
-        TimedValue(at=MIDNIGHT + timedelta(hours=11), value=1000.0),  # different slot
+        _tv(MIDNIGHT + timedelta(hours=10), 10.0),
+        _tv(MIDNIGHT + timedelta(hours=10, minutes=5), 20.0),
+        _tv(MIDNIGHT + timedelta(hours=11), 1000.0),  # different slot
     )
     profile = build_slot_profile(samples, slot_minutes=15.0, min_samples=1)
     assert profile.mean_for(MIDNIGHT + timedelta(hours=10, minutes=2)) == pytest.approx(15.0)
 
 
 def test_weekday_and_weekend_slots_are_kept_separate():
-    weekday_sample = TimedValue(at=MIDNIGHT + timedelta(hours=10), value=10.0)
-    weekend_sample = TimedValue(
-        at=MIDNIGHT + timedelta(days=5, hours=10), value=90.0
-    )  # the following Saturday
+    weekday_sample = _tv(MIDNIGHT + timedelta(hours=10), 10.0)
+    weekend_sample = _tv(MIDNIGHT + timedelta(days=5, hours=10), 90.0)  # the following Saturday
     profile = build_slot_profile(
         (weekday_sample, weekend_sample), slot_minutes=15.0, min_samples=1
     )
@@ -140,7 +145,7 @@ def test_weekday_and_weekend_slots_are_kept_separate():
 
 
 def test_below_min_samples_reports_unknown_not_zero():
-    samples = (TimedValue(at=MIDNIGHT + timedelta(hours=10), value=10.0),)
+    samples = (_tv(MIDNIGHT + timedelta(hours=10), 10.0),)
     profile = build_slot_profile(samples, slot_minutes=15.0, min_samples=3)
     assert profile.mean_for(MIDNIGHT + timedelta(hours=10)) is None
     assert profile.sample_count_for(MIDNIGHT + timedelta(hours=10)) == 1
@@ -156,7 +161,7 @@ def test_a_standard_set_run_leaves_every_weekend_slot_unknown(config):
     run = run_scenario(config, scenario, ThresholdScheduler(config.scheduler))
 
     samples = tuple(
-        TimedValue(at=step.start, value=step.demand_lpm) for step in run.steps
+        _tv(step.start, step.demand_lpm) for step in run.steps
     )
     profile = build_slot_profile(samples, slot_minutes=15.0, min_samples=1)
     saturday_slot = scenario.start + timedelta(days=5, hours=10)
@@ -172,8 +177,8 @@ def test_a_gap_yields_unknown_rather_than_the_neighbouring_sample():
     the lag target falls in the middle of a gap neither neighbour is
     close enough to cover."""
     series = (
-        TimedValue(at=MIDNIGHT, value=1.0),
-        TimedValue(at=MIDNIGHT + timedelta(hours=2), value=99.0),
+        _tv(MIDNIGHT, 1.0),
+        _tv(MIDNIGHT + timedelta(hours=2), 99.0),
     )
     now = MIDNIGHT + timedelta(hours=3)  # both samples are in the past
     # target = now - 120min = 1:00, exactly midway between the two samples,
@@ -187,10 +192,10 @@ def test_nothing_at_or_after_now_can_change_a_lag_or_rolling_feature():
     leakage. Injecting a huge spike at and after ``now`` must not move any
     value computed for ``now``."""
     now = MIDNIGHT + timedelta(hours=10)
-    past = (TimedValue(at=now - timedelta(minutes=30), value=5.0),)
+    past = (_tv(now - timedelta(minutes=30), 5.0),)
     with_future_spike = past + (
-        TimedValue(at=now, value=9999.0),
-        TimedValue(at=now + timedelta(minutes=10), value=9999.0),
+        _tv(now, 9999.0),
+        _tv(now + timedelta(minutes=10), 9999.0),
     )
 
     assert value_at_lag(
@@ -204,9 +209,9 @@ def test_nothing_at_or_after_now_can_change_a_lag_or_rolling_feature():
 def test_rolling_mean_and_max_cover_only_the_window():
     now = MIDNIGHT + timedelta(hours=10)
     series = (
-        TimedValue(at=now - timedelta(minutes=90), value=1000.0),  # outside 1h window
-        TimedValue(at=now - timedelta(minutes=30), value=2.0),
-        TimedValue(at=now - timedelta(minutes=10), value=4.0),
+        _tv(now - timedelta(minutes=90), 1000.0),  # outside 1h window
+        _tv(now - timedelta(minutes=30), 2.0),
+        _tv(now - timedelta(minutes=10), 4.0),
     )
     stats = rolling_stats(series, now, window_minutes=60.0)
     assert stats.count == 2
@@ -218,12 +223,29 @@ def test_rolling_stats_reports_unknown_for_an_empty_window():
     assert rolling_stats((), MIDNIGHT, window_minutes=60.0) is None
 
 
+def test_rolling_window_includes_the_sample_exactly_at_its_far_edge():
+    """Regression. An earlier version excluded both edges of the window,
+    so on the ordinary fixed-cadence control loop — samples every
+    ``step_minutes``, a window that is a whole multiple of it — the oldest
+    sample landed exactly on ``now - window_minutes`` and was silently
+    dropped on *every single call*: a '1h rolling mean' over a 15-minute
+    grid reported 3 samples instead of 4, not a rare edge case but the
+    normal one."""
+    now = MIDNIGHT + timedelta(hours=10)
+    series = tuple(
+        _tv(now - timedelta(minutes=15 * k), float(k)) for k in range(1, 5)
+    )  # samples at t-15, t-30, t-45, t-60
+    stats = rolling_stats(series, now, window_minutes=60.0)
+    assert stats.count == 4
+    assert stats.mean == pytest.approx((1.0 + 2.0 + 3.0 + 4.0) / 4.0)
+
+
 def test_value_at_includes_the_sample_at_now_unlike_value_at_lag():
     """``value_at`` is for state snapshots (e.g. ``service_level``), where
     the reading taken at ``now`` is legitimately known at decision time —
     unlike an interval-start demand sample."""
     now = MIDNIGHT + timedelta(hours=10)
-    series = (TimedValue(at=now, value=0.42),)
+    series = (_tv(now, 0.42),)
     assert value_at(series, now, tolerance_minutes=1.0) == pytest.approx(0.42)
     assert value_at_lag(series, now, lag_minutes=0.0, tolerance_minutes=1.0) is None
 
@@ -307,6 +329,55 @@ def test_an_invalid_sensor_reading_is_unidentifiable(tank, pump):
     assert observed_demand_lpm(previous, current, pump) is None
 
 
+def test_two_readings_at_the_same_instant_are_unidentifiable_not_an_error(tank, pump):
+    """Zero elapsed time is arithmetically degenerate, not a caller
+    mistake the way a *reversed* pair is — distinct from the case below."""
+    a = _observe(MIDNIGHT, 500.0, actuator_on=False)
+    b = _observe(MIDNIGHT, 490.0, actuator_on=False)
+    assert observed_demand_lpm(a, b, pump) is None
+
+
+def test_a_reversed_pair_raises_rather_than_returns_unknown(tank, pump):
+    """Regression. Passing ``current`` before ``previous`` used to fall
+    through the same ``dt <= 0`` branch as a genuinely zero-duration
+    interval and return ``None`` — a caller bug disguised as an
+    unidentifiable interval. ``observed_demand_series`` already raised for
+    the equivalent condition; the single-pair function now matches it."""
+    earlier = _observe(MIDNIGHT, 500.0, actuator_on=False)
+    later = _observe(MIDNIGHT + timedelta(minutes=10), 490.0, actuator_on=False)
+    with pytest.raises(ValueError, match="chronological order"):
+        observed_demand_lpm(later, earlier, pump)
+
+
+def test_a_non_litres_reading_is_rejected(tank, pump):
+    """Regression. Nothing checked ``native_unit`` before computing —
+    the exact failure class ``require_demand_forecast`` exists to prevent
+    on the ``Forecast`` side, just missing on the raw-observation side."""
+    previous = ResourceObservation(
+        MIDNIGHT, RESOURCE_ID, 0.5, 500.0, "kW", False, Provenance.SIMULATED
+    )
+    current = ResourceObservation(
+        MIDNIGHT + timedelta(minutes=10), RESOURCE_ID, 0.49, 490.0, "kW", False, Provenance.SIMULATED
+    )
+    with pytest.raises(ValueError, match="native_unit"):
+        observed_demand_lpm(previous, current, pump)
+
+
+def test_derived_demand_is_stamped_as_derived_provenance(tank, pump):
+    """The hard rule ('distinguish Measured / Simulated / Predicted /
+    Estimated / Derived in all logs and reports') applies to this series
+    as much as to any named result — 'mm -> litres' is CLAUDE.md's own
+    example of what DERIVED means, and this is the same kind of
+    deterministic transform."""
+    observations = (
+        _observe(MIDNIGHT, 500.0, actuator_on=False),
+        _observe(MIDNIGHT + timedelta(minutes=10), 490.0, actuator_on=False),
+    )
+    series = observed_demand_series(observations, pump)
+    assert len(series) == 1
+    assert series[0].provenance is Provenance.DERIVED
+
+
 def test_observed_demand_series_skips_unidentifiable_intervals_not_insert_a_guess(
     tank, pump
 ):
@@ -380,18 +451,46 @@ def test_a_feature_vector_carries_its_names_values_and_version_in_lockstep():
         demand_series=(),
         slot_profile=profile,
         service_level_series=(),
-        slot_minutes=15.0,
+        provenance=Provenance.SIMULATED,
     )
     assert isinstance(vector, FeatureVector)
     assert len(vector.values) == len(FEATURE_NAMES)
     assert vector.feature_set_version == FEATURE_SET_VERSION
+    assert vector.provenance is Provenance.SIMULATED
 
 
 def test_mismatched_names_and_values_are_rejected():
     with pytest.raises(ValueError, match="values for"):
         FeatureVector(
-            moment=MIDNIGHT, names=("a", "b"), values=(1.0,), feature_set_version="x"
+            moment=MIDNIGHT,
+            names=("a", "b"),
+            values=(1.0,),
+            feature_set_version="x",
+            provenance=Provenance.SIMULATED,
         )
+
+
+def test_the_slot_grid_comes_only_from_the_profile_no_separate_argument():
+    """Regression: an earlier version took a separate ``slot_minutes``
+    argument alongside ``slot_profile``, and nothing stopped them
+    disagreeing — ``slot_index`` would be computed on one grid while
+    ``slot_mean_demand_lpm`` was looked up on the profile's own, different
+    one, silently, in the same vector. There is now exactly one grid: the
+    profile's."""
+    profile_30min = build_slot_profile(
+        (_tv(MIDNIGHT + timedelta(hours=10), 7.0),), slot_minutes=30.0, min_samples=1
+    )
+    vector = build_feature_vector(
+        MIDNIGHT + timedelta(hours=10),
+        demand_series=(),
+        slot_profile=profile_30min,
+        service_level_series=(),
+        provenance=Provenance.SIMULATED,
+    )
+    # slot_index must reflect the profile's 30-minute grid (20), not a
+    # hardcoded or mismatched 15-minute one (40).
+    assert vector.as_dict()["slot_index"] == 20.0
+    assert vector.as_dict()["slot_mean_demand_lpm"] == pytest.approx(7.0)
 
 
 def test_a_vector_built_in_the_first_hours_of_a_run_honestly_reports_unknowns(config):
@@ -401,7 +500,7 @@ def test_a_vector_built_in_the_first_hours_of_a_run_honestly_reports_unknowns(co
 
     observations = _observations_from_steps(run.steps)
     demand_series = observed_demand_series(observations, pump)
-    level_series = tuple(TimedValue(at=o.timestamp, value=o.service_level) for o in observations)
+    level_series = tuple(_tv(o.timestamp, o.service_level) for o in observations)
     profile = build_slot_profile(demand_series, slot_minutes=15.0, min_samples=3)
 
     early = build_feature_vector(
@@ -409,7 +508,7 @@ def test_a_vector_built_in_the_first_hours_of_a_run_honestly_reports_unknowns(co
         demand_series=demand_series,
         slot_profile=profile,
         service_level_series=level_series,
-        slot_minutes=15.0,
+        provenance=Provenance.SIMULATED,
     )
     assert "demand_lag_1_day" in early.missing
     assert "demand_lag_7_day" in early.missing
@@ -419,7 +518,7 @@ def test_a_vector_built_in_the_first_hours_of_a_run_honestly_reports_unknowns(co
         demand_series=demand_series,
         slot_profile=profile,
         service_level_series=level_series,
-        slot_minutes=15.0,
+        provenance=Provenance.SIMULATED,
     )
     assert "demand_lag_1_day" not in late.missing
     assert "demand_lag_7_day" not in late.missing

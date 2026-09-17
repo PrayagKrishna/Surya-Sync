@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from surya_sync.domain import TimedValue
+from surya_sync.domain import Provenance, TimedValue
 from surya_sync.temporal.context import build_temporal_context
 from surya_sync.temporal.history import rolling_stats, value_at, value_at_lag
 from surya_sync.temporal.profiles import SlotProfile
@@ -54,6 +54,12 @@ class FeatureVector:
     names: tuple[str, ...]
     values: tuple[float | None, ...]
     feature_set_version: str
+    provenance: Provenance
+    """Whether the observations this vector was built from are measured or
+    simulated — mirrors ``SchedulingRequest.provenance``, a single
+    top-level flag rather than one per feature, since a cyclic-time
+    feature has no data-quality question to answer and the demand/service-
+    level features all come from the same caller-assembled history."""
 
     def __post_init__(self) -> None:
         if len(self.values) != len(self.names):
@@ -77,7 +83,7 @@ def build_feature_vector(
     demand_series: tuple[TimedValue, ...],
     slot_profile: SlotProfile,
     service_level_series: tuple[TimedValue, ...],
-    slot_minutes: float,
+    provenance: Provenance,
 ) -> FeatureVector:
     """Build the fixed-order feature vector for ``moment``.
 
@@ -85,7 +91,15 @@ def build_feature_vector(
     chronological, produced by ``models.tank.observed_demand_series`` and
     from raw ``ResourceObservation`` history respectively; this function
     does not sort them.
+
+    The slot grid comes from ``slot_profile.slot_minutes`` alone — there is
+    deliberately no separate ``slot_minutes`` argument. An earlier version
+    took one, and nothing stopped it disagreeing with the profile's own
+    grid: ``slot_index`` would be computed on one grid while
+    ``slot_mean_demand_lpm`` was looked up on another, silently, in the
+    same vector.
     """
+    slot_minutes = slot_profile.slot_minutes
     context = build_temporal_context(moment, slot_minutes)
     tolerance = slot_minutes / 2.0
 
@@ -129,4 +143,5 @@ def build_feature_vector(
         names=FEATURE_NAMES,
         values=tuple(values[name] for name in FEATURE_NAMES),
         feature_set_version=FEATURE_SET_VERSION,
+        provenance=provenance,
     )
