@@ -79,7 +79,8 @@ Actively in development, following a 16-phase roadmap (see [`ROADMAP.md`](ROADMA
 | 2 | Conventional threshold control, safety layer, control loop | ✅ Complete |
 | 3 | Solar-reactive control | ✅ Complete |
 | 4 | Temporal feature engineering | ✅ Complete |
-| 5–16 | ML → MPC → hardware → frontend | 🚧 Next |
+| 5 | Demand ML (mean baseline → linear → random forest → gradient boosting) | ✅ Complete |
+| 6–16 | Solar forecast → MPC → hardware → frontend | 🚧 Next |
 
 The first scheduler exists as of Phase 2: a conventional threshold
 controller, which is the **baseline** every later phase has to beat, not the
@@ -193,6 +194,38 @@ overflow and unserved demand are reported as quantities (`spilled_l`,
 `unmet_demand_l`) instead of being absorbed by clamping the tank volume, and
 the pump is credited only with surplus PV left after the base household load,
 so a scheduler cannot book the fridge's solar as its own.
+
+### Demand ML quickstart
+
+Requires the `ml` extra (`pip install -e ".[ml]"`, numpy + scikit-learn —
+the only third-party runtime dependencies in the repo so far, gated to
+this phase). Trains the mean baseline through gradient boosting on
+`simulator.scenarios.realistic_household` (30 days, real day-to-day
+demand variation — deliberately not the frozen `standard_set`/
+`extended_set` scenarios, which hold demand fixed for controller
+comparison and would let a model memorize one repeating day) and prints
+validation and held-out test error:
+
+```bash
+.venv/bin/python -m surya_sync.main --train-demand-model
+```
+
+```text
+SIMULATED results — not physical measurements (30 days, 'realistic')
+train=2015 val=431 test=433 examples
+model                  val_MAE  val_RMSE  test_MAE test_RMSE
+mean_baseline           0.2039    0.2391    0.2019    0.2464
+linear_regression       0.0183    0.0276    0.0214    0.0325
+random_forest           0.0177    0.0266    0.0227    0.0350
+gradient_boosting       0.0192    0.0282    0.0228    0.0353
+```
+
+`ml.demand.SELECTED_MODEL` is linear regression: it ties random forest on
+validation MAE (within ~3%) and is far cheaper to run on a Pi Zero — a
+provisional call, pending Phase 12's actual on-device benchmark. See
+`ROADMAP.md`'s Phase 5 entry for how a real bug (an actuator-timing
+mix-up that fabricated demand values up to +/-30 L/min) was found and
+fixed before these numbers were trusted.
 
 ## License
 
