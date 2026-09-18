@@ -225,6 +225,43 @@ def standard_set(config: Config, days: float = 3.0) -> tuple[Scenario, ...]:
     )
 
 
+def realistic_household(config: Config, days: float = 30.0, jitter: float = 0.15) -> Scenario:
+    """A single 30-day household with real day-to-day variation.
+
+    For ML benchmarking (Phase 5 onward), not for controller comparison.
+    ``standard_set``/``extended_set`` hold demand and weather fixed for
+    their whole duration on purpose — Phase 2's design isolates one
+    variable per scenario so a controller comparison is fair. That is the
+    wrong shape of data to train or score a demand model against:
+    ``_household_demand()``'s default ``jitter=0.0`` means every one of
+    those 30 days is bit-for-bit identical at the same time-of-day, so a
+    model doesn't have to learn a noisy pattern, it can memorize one day
+    and replay it — which is why Phase 5's first pass measured a random
+    forest at 0.003 L/min MAE (near machine precision) and could not tell
+    that number apart from genuine skill. See ``ROADMAP.md``'s Phase 5
+    hardening entry.
+
+    Day-to-day demand variation (``jitter``) and passing-cloud solar
+    (``IntermittentProfile`` over ``ClearSkyProfile``, already used by
+    ``cloudy``) are both still pure functions of time via
+    ``simulator.noise.signed_noise``/``unit_noise`` — turning them on does
+    not touch the "no call-ordered random streams" hard rule.
+    """
+    return Scenario(
+        name="realistic",
+        description="Thirty days with day-to-day demand variation and "
+        "passing-cloud solar — for ML benchmarking, not the controller "
+        "comparisons the frozen scenario sets exist for.",
+        demand_profile=DiurnalDemandProfile(
+            daily_volume_l=DEFAULT_DAILY_DEMAND_L, seed=DEFAULT_SEED, jitter=jitter
+        ),
+        solar_profile=IntermittentProfile(base=_clear_sky(config), seed=DEFAULT_SEED),
+        base_load_profile=DiurnalBaseLoadProfile(),
+        initial_service_level=0.60,
+        days=days,
+    )
+
+
 def extended_set(config: Config, days: float = 30.0) -> tuple[Scenario, ...]:
     """The standard four, run long enough to separate a real trend from a
     short-window artifact, plus ``monsoon`` for sustained (not

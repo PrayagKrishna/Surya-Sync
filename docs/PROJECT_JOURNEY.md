@@ -910,6 +910,211 @@ found five defects, none of them reachable by the existing 449 tests.
 
 ---
 
+### 2026-09-18 — Phase 5 closed: demand ML baselines through gradient boosting
+
+Phase 4 left a feature vector and a derived-demand target with nowhere to
+train against. This phase builds the dataset assembly, the mandatory mean
+baseline, and the three ML tiers `ROADMAP.md` requires before any of them
+is trusted.
+
+- **Built:**
+  - `ml/evaluation.py` (new) — `chronological_split` (index-based, never
+    shuffles), `mean_absolute_error`, `root_mean_squared_error`. Placed at
+    `ml/` top level rather than inside `ml/demand/` because Phase 6's
+    solar forecast needs the identical split and the identical metrics.
+  - `ml/demand/dataset.py` (new) — `build_demand_dataset` turns a
+    resource's observation history into a `DemandDataset`
+    (train/val/test). `SlotProfile` is fit on the train slice only
+    (its (day-type, slot) mean has no notion of "before"/"after," so
+    fitting it on the whole series would leak val/test-period days into
+    the historical mean a training example reads); lag/rolling features
+    are built from the *full* series for every example, since they only
+    ever look strictly backward from `moment` and so can never see a
+    later timestamp than themselves regardless of split.
+  - `ml/demand/baselines.py` — `MeanBaseline`, filled in from its Phase 0
+    stub.
+  - `ml/demand/models.py` — `LinearDemandModel`, `RandomForestDemandModel`,
+    `GradientBoostingDemandModel` (scikit-learn, `SimpleImputer(strategy=
+    "median")` ahead of each estimator — the median rather than the mean
+    because the features most likely to be missing early in a series are
+    lag/rolling statistics a single spike can skew).
+  - `experiments/runner.py` — `ScenarioRun` gained an `observations`
+    field, parallel to `steps`/`decisions`; populated unconditionally in
+    the existing loop, no signature change for any caller. This is what
+    Phase 5's dataset is built from, deliberately not the simulator's
+    ground-truth demand, which a real Pi never has.
+  - `main.py --train-demand-model` — runs the full pipeline over
+    `extended_set` and prints MAE/RMSE per scenario plus an aggregate.
+  - `tests/test_evaluation.py`, `tests/test_demand_models.py`,
+    `tests/test_demand_dataset.py` (new, 27 tests total).
+
+- **Measured** `[simulated]`, `extended_set`, 30 days, default config,
+  aggregate test-set MAE (L/min):
+
+  | model | MAE |
+  |---|---|
+  | mean_baseline | 0.891 |
+  | linear_regression | 2.299 |
+  | random_forest | 0.052 |
+  | gradient_boosting | 0.074 |
+
+  Random forest wins on every individual scenario's MAE and is selected
+  as Phase 5's model, provisional on Phase 12's Pi-cost benchmark, which
+  has not run — "final model chosen by measured performance + Pi
+  inference cost" is only half satisfied until then.
+
+- **Two findings recorded rather than smoothed over:**
+  - **Linear regression loses to the mean baseline on MAE, on every
+    scenario** (2.75 vs. 0.89 on `sunny`), despite beating it on RMSE
+    (3.95 vs. 4.57). Verified cause: unregularized `LinearRegression`
+    predicts negative demand for 391 of 433 `sunny` test examples (the
+    derived-demand target itself ranges -29.7 to 30.6 L/min — a signed-
+    noise artifact of `DiurnalDemandProfile`, not something this phase
+    introduced), and the majority of slots have small true demand near
+    the training mean the baseline cannot be pulled away from. This is
+    the mandatory-baseline rule earning its keep: a "fancier" model
+    genuinely lost here.
+  - **`sunny`, `cloudy` and `monsoon` report identical numbers for every
+    model.** Checked, not a leak: `simulator/scenarios.py`'s
+    `_household_demand()` builds one seeded `DiurnalDemandProfile` shared
+    by all three, which differ only in solar. Only `spike` and
+    `low_start` vary the demand signal.
+  - Checked and found not to apply here: the Phase 4 gap case (an
+    interval unidentifiable at overflow or run-dry) is real and unit-
+    tested, but every `extended_set` scenario under the threshold
+    controller identifies all 2,879 of 2,879 possible intervals — this
+    config's safety layer keeps the tank clear of both boundaries. A
+    scenario or config that runs the tank closer to its limits would need
+    checking again before assuming "no gaps."
+
+- **AI assistance:** Claude Code read the existing `models.tank`,
+  `temporal/`, `ml/features/builder.py`, `experiments/runner.py` and
+  `main.py` before designing, chose the train-only-profile /
+  full-series-lags split and the median-imputation strategy, implemented
+  all new modules and tests, ran the pipeline to produce the measured
+  table above, and updated `ROADMAP.md`/`CLAUDE.md`. No author design
+  calls were solicited mid-session; this entry is written for the author
+  to review against the diff.
+
+- **Open questions carried forward:** Pi inference cost for random forest
+  vs. gradient boosting is unmeasured — Phase 12's job. Phase 6 (solar
+  forecast) reuses `ml/evaluation.py` unchanged.
+
+---
+
+### 2026-09-18 — Phase 5 hardened: an actuator-timing bug, not an accuracy problem
+
+Asked to debug and optimize Phase 5 "as perfectly as possible" for solid,
+consistent results, and to run a realistic 30-day simulation. The
+suspiciously good first-pass numbers (random forest at 0.003-0.13 MAE)
+were not a modelling win — they were a real bug in how demand gets
+inverted from tank readings, present since Phase 4 and invisible until
+this phase's own data exposed it.
+
+- **Root cause, verified end to end:** `models.tank.observed_demand_lpm`
+  used `previous.actuator_on` to compute the pump's inflow over
+  `[previous.timestamp, current.timestamp)`. A real control loop observes
+  the tank, *then* decides an action, *then* applies it — so an
+  observation reports whatever the *previous* decision left the actuator
+  as, not the one about to govern the interval starting there.
+  `TankSimulator.advance` confirms this exactly: it calls `_apply(action)`
+  (updating `self.actuator_on`) before integrating the step, then advances
+  the clock — so the *next* observation, taken before its own decision, is
+  the one that reflects the action that just ran. `current.actuator_on` is
+  therefore correct; `previous.actuator_on` reads a different interval's
+  state entirely.
+  - **How it was caught:** not by inspection, but by asking why random
+    forest's MAE (0.003-0.13 L/min, scenario-dependent) was ~30-280x
+    better than the mean baseline on a target the demand generator caps
+    under 1 L/min. Checking `RandomForestRegressor.feature_importances_`
+    showed `service_level` at 51% — implausibly dominant for a feature
+    that is just "current tank level" — which led to inspecting the
+    actual recovered demand values and finding they ranged -29.7 to
+    +30.6 L/min, physically impossible for this household.
+  - **Independent confirmation:** `tests/test_temporal.py` already had a
+    hand-built fixture helper, `_observations_from_steps`, that manually
+    shifted `actuator_on` forward by one step when constructing synthetic
+    "real deployment" observations, with a comment stating the exact
+    reason ("must reflect the interval starting there, not the one that
+    just ended"). That comment is proof a prior session understood this
+    exact subtlety and worked around it inside one test fixture, but
+    never fixed the function itself — and nothing caught the gap because
+    no production code path fed the function a raw, unshifted stream
+    until this phase's `ScenarioRun.observations` field (added last
+    session) did.
+- **Fix:** one line — `pump.inflow_lpm(current.actuator_on)` in place of
+  `previous.actuator_on` — plus the docstring explaining why the direction
+  matters (`predict_tank_trajectory` faces forward from a known state;
+  this function faces backward from two readings after the fact, which is
+  why the same-looking convention runs the other way). Deleted
+  `_observations_from_steps`; the two tests that used it now run against
+  `run.observations` directly, and a new regression test
+  (`test_current_actuator_on_governs_not_previous`) pins the corrected
+  direction with deliberately mismatched previous/current values — every
+  other existing test happened to use the same value for both, so none of
+  them could have caught a reversal.
+- **A second, independent problem, found while investigating the first:**
+  the frozen `extended_set`/`standard_set` scenarios hold demand fixed for
+  their entire duration (`_household_demand()`'s default `jitter=0.0`),
+  correct for Phase 2/3's controller comparisons but the wrong shape of
+  data for ML — a model can memorize one repeating day rather than learn
+  a noisy pattern. Added `simulator.scenarios.realistic_household` (30
+  days, real day-to-day demand jitter via the already-existing
+  `signed_noise`, passing-cloud solar via the already-existing
+  `IntermittentProfile` — no new randomness mechanism, no hard-rule
+  conflict) as a separate scenario for ML use. `extended_set`/
+  `standard_set` are untouched.
+- **Also fixed:** the validation split existed since the first Phase 5
+  pass but was never read by anything. `main.py --train-demand-model` now
+  prints validation *and* test MAE/RMSE and warns when a tier fails to
+  beat the previous tier's validation MAE, rather than reporting every
+  tier as if it had earned its place.
+- **Measured** [simulated], `realistic_household`, 30 days, default
+  config — before vs. after the fix, recovered demand range: -29.7 to
+  +30.6 L/min before, 0.01 to 0.96 L/min after (true profile max under
+  1 L/min). Final validation MAE (L/min): mean 0.204, linear 0.018,
+  random forest 0.018 (best, by ~3% over linear), gradient boosting 0.019
+  (flagged — does not beat random forest). Random forest's feature
+  importance shifted from 51% `service_level` (pre-fix, an artifact) to
+  98% `slot_mean_demand_lpm` (post-fix, the sane result for a
+  mostly-deterministic curve plus jitter). 484 tests pass (482 before this
+  entry's two regression tests).
+- **Decision, confirmed by the author:** linear regression is Phase 5's
+  chosen model, not random forest — pinned as code in
+  `ml.demand.SELECTED_MODEL` (and by
+  `test_selected_model_is_linear_regression`) rather than left as prose
+  only, so a Phase 7 session has one place to read the answer instead of
+  re-deriving it. Random forest's accuracy edge over linear regression is
+  now small (~3%) where it was previously the entire story, and linear
+  regression is far cheaper on a Pi Zero. This reverses the prior entry's
+  "random forest wins" call — not because the earlier reasoning was
+  unsound given its inputs, but because those inputs were corrupted by the
+  bug above. "Final model chosen by measured performance + Pi inference
+  cost" is met on measured performance; the Pi inference cost half is
+  still reasoned about rather than measured, since Phase 12 has not
+  benchmarked either model on real hardware — Phase 12 could still
+  overturn this call if random forest turns out cheap enough on-device.
+- **AI assistance:** Claude Code was asked to debug and optimize Phase 5's
+  ML pipeline and run a realistic 30-day simulation. It found the
+  suspicious accuracy suspicious rather than reporting it, traced the
+  feature importances to `service_level`, reconstructed the exact
+  observe-decide-act sequencing in `run_scenario`/`TankSimulator.advance`
+  to prove the direction of the bug before changing any code, fixed it,
+  separately identified and fixed the zero-jitter scenario problem, wired
+  up the previously-unused validation split, and updated `ROADMAP.md`/
+  `CLAUDE.md`/this file. No author design calls were solicited mid-session;
+  written for the author to review against the diff, including the
+  reversal of the prior entry's model choice.
+- **Open questions carried forward:** Phase 12's Pi Zero benchmark can
+  still overturn the linear-regression choice in either direction — it
+  could confirm linear regression's cost advantage or find random forest
+  cheap enough on-device that its small accuracy edge is worth taking.
+  Phase 6 (solar forecast) should check its own baselines for the same
+  class of "too good to be true" result before trusting them, given this
+  phase's experience.
+
+---
+
 ## Maintaining this file
 
 1. Add an entry at the end of every phase, and at the end of any session that

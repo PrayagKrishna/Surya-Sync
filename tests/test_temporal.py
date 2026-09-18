@@ -263,24 +263,6 @@ def tank(config) -> TankModel:
     return TankModel.from_config(config.tank)
 
 
-def _observations_from_steps(steps) -> tuple[ResourceObservation, ...]:
-    """Turn a scenario run's ``SimulationStep`` sequence into the raw
-    tank observations a real deployment would have recorded at each
-    interval boundary.
-
-    Each boundary observation's ``actuator_on`` must reflect the interval
-    *starting* there, not the one that just ended — that is what
-    ``observed_demand_lpm`` reads as ``previous.actuator_on`` when this
-    observation becomes ``previous`` for the next interval. Getting this
-    backwards silently mixes the wrong pump state into the inverse.
-    """
-    observations = [_observe(steps[0].start, steps[0].volume_start_l, steps[0].actuator_on)]
-    for i, step in enumerate(steps):
-        upcoming_actuator_on = steps[i + 1].actuator_on if i + 1 < len(steps) else step.actuator_on
-        observations.append(_observe(step.end, step.volume_end_l, upcoming_actuator_on))
-    return tuple(observations)
-
-
 def _observe(at, native_value, actuator_on, sensor_valid=True) -> ResourceObservation:
     return ResourceObservation(
         timestamp=at,
@@ -305,6 +287,26 @@ def test_observed_demand_round_trips_tank_model_step_exactly(tank, pump):
     assert not outcome.overflowed and not outcome.ran_dry
 
     previous = _observe(MIDNIGHT, start_volume, actuator_on=True)
+    current = _observe(MIDNIGHT + timedelta(minutes=10), outcome.volume_l, actuator_on=True)
+
+    recovered = observed_demand_lpm(previous, current, pump)
+    assert recovered == pytest.approx(12.0, rel=1e-9)
+
+
+def test_current_actuator_on_governs_not_previous(tank, pump):
+    """Regression, Phase 5. ``previous.actuator_on`` reports whatever the
+    *prior* decision left the pump as — a real observation is taken
+    before the decision for the interval it is about to start, so it
+    cannot know that decision yet. ``current``, taken after that decision
+    was applied and acted on, is the one that reflects it. Pinning this
+    with mismatched previous/current values, unlike every other test in
+    this file, which happens to use the same value for both and so cannot
+    tell the two apart."""
+    start_volume = 500.0
+    outcome = tank.step(
+        volume_l=start_volume, inflow_lpm=pump.flow_rate_lpm, demand_lpm=12.0, minutes=10.0
+    )
+    previous = _observe(MIDNIGHT, start_volume, actuator_on=False)
     current = _observe(MIDNIGHT + timedelta(minutes=10), outcome.volume_l, actuator_on=True)
 
     recovered = observed_demand_lpm(previous, current, pump)
@@ -395,13 +397,24 @@ def test_observed_demand_series_skips_unidentifiable_intervals_not_insert_a_gues
 def test_observed_demand_matches_simulator_ground_truth_over_a_real_run(config):
     """End to end [simulated]: over a real scenario run, the demand this
     module derives from raw tank readings must match the simulator's own
-    ground-truth ``SimulationStep.demand_lpm`` for every non-clamped step."""
+    ground-truth ``SimulationStep.demand_lpm`` for every non-clamped step.
+
+    Uses ``run.observations`` — the same raw, uncorrected stream
+    ``resource.observe()`` actually produces in the control loop — rather
+    than a hand-built fixture. A prior version of this test built its own
+    observations from ``run.steps`` with ``actuator_on`` deliberately
+    shifted forward by one step to match ``observed_demand_lpm``'s (then
+    incorrect) assumption that ``previous.actuator_on`` governs the
+    interval. That shift was itself evidence the two disagreed: a real
+    observation reports the actuator's *current* state, which is whatever
+    the previous decision left it as, not the one about to run — see the
+    Phase 5 hardening note in ``CLAUDE.md``. Testing against the real
+    stream is what would have caught it."""
     pump = PumpModel.from_config(config.pump)
     scenario = scenarios.cloudy(config)
     run = run_scenario(config, scenario, ThresholdScheduler(config.scheduler))
 
-    observations = _observations_from_steps(run.steps)
-    series = observed_demand_series(observations, pump)
+    series = observed_demand_series(run.observations, pump)
     by_start = {tv.at: tv.value for tv in series}
 
     checked = 0
@@ -498,9 +511,8 @@ def test_a_vector_built_in_the_first_hours_of_a_run_honestly_reports_unknowns(co
     run = run_scenario(config, scenario, ThresholdScheduler(config.scheduler))
     pump = PumpModel.from_config(config.pump)
 
-    observations = _observations_from_steps(run.steps)
-    demand_series = observed_demand_series(observations, pump)
-    level_series = tuple(_tv(o.timestamp, o.service_level) for o in observations)
+    demand_series = observed_demand_series(run.observations, pump)
+    level_series = tuple(_tv(o.timestamp, o.service_level) for o in run.observations)
     profile = build_slot_profile(demand_series, slot_minutes=15.0, min_samples=3)
 
     early = build_feature_vector(
