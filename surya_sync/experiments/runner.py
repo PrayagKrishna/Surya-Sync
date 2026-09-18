@@ -28,7 +28,7 @@ from datetime import datetime
 from surya_sync.config.schema import Config
 from surya_sync.control_loop import ControlCycle, CycleDecision
 from surya_sync.domain import Forecast, Horizon, Provenance, RunMode
-from surya_sync.models.generic_resource import ResourceRegistry
+from surya_sync.models.generic_resource import ResourceObservation, ResourceRegistry
 from surya_sync.safety.rules import default_rules
 from surya_sync.safety.validator import SafetyValidator
 from surya_sync.scheduler.base import FallbackChain, Scheduler, SchedulingRequest
@@ -57,6 +57,12 @@ class ScenarioRun:
     step_minutes: float
     steps: tuple[SimulationStep, ...]
     decisions: tuple[CycleDecision, ...]
+    observations: tuple[ResourceObservation, ...]
+    """The resource's own reading at the start of each cycle, parallel to
+    ``steps``/``decisions``. This is what Phase 5's demand dataset is built
+    from (via ``models.tank.observed_demand_series``), rather than the
+    simulator's ground-truth demand — a real Pi never has that, only the
+    tank readings it must invert. See ``ml.demand.dataset``."""
     provenance: Provenance = Provenance.SIMULATED
     """Simulated throughout. Never report these numbers as measured."""
 
@@ -177,10 +183,12 @@ def run_scenario(
 
     steps: list[SimulationStep] = []
     decisions: list[CycleDecision] = []
+    observations: list[ResourceObservation] = []
 
     for _ in range(scenario.n_steps(step_minutes)):
         now = simulator.clock
         observation = resource.observe()
+        observations.append(observation)
         state_manager.record_observation(observation)
         state_manager.record_actuation_history(simulator.actuation_history())
         state_manager.record_electrical(_electrical_at(simulator, now))
@@ -222,6 +230,7 @@ def run_scenario(
         step_minutes=step_minutes,
         steps=tuple(steps),
         decisions=tuple(decisions),
+        observations=tuple(observations),
     )
 
 

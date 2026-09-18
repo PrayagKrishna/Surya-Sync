@@ -111,11 +111,77 @@ closes.
   `temporal/adaptation.py` stays a stub — deliberately out of scope; see
   the carried-forward note below.*
 
-- [ ] **Phase 5 — Demand ML**
+- [x] **Phase 5 — Demand ML** ✅
   Mean baseline → linear regression → random forest → gradient boosting.
   Exit: chronological train/val/test split; MAE/RMSE reported for every
   model; final model chosen by measured performance + Pi inference cost,
   not by default.
+  *Met, after a hardening pass — see `PROJECT_JOURNEY.md`'s "Phase 5
+  hardened" entry for the full debugging trail. `ml.evaluation.
+  chronological_split` (index-based, never shuffles — shared with Phase 6
+  solar) splits `models.tank.observed_demand_series` 70/15/15;
+  `SlotProfile` is fit on the train slice only
+  (`ml.demand.dataset.build_demand_dataset`). `ml.demand.baselines.
+  MeanBaseline` and `ml.demand.models.{Linear,RandomForest,
+  GradientBoosting}DemandModel` (scikit-learn, median-imputed) share one
+  `fit`/`predict` shape. `main.py --train-demand-model` runs the pipeline
+  over the new `simulator.scenarios.realistic_household` (30 days, real
+  day-to-day demand jitter and passing-cloud solar — not `extended_set`,
+  whose scenarios each hold demand fixed for their whole duration by
+  design, see that function's docstring) and prints validation *and*
+  held-out test MAE/RMSE, flagging any tier that fails to beat the
+  previous one's validation MAE rather than reporting it uncommented.
+
+  **A real bug was found and fixed while checking Phase 5's first-pass
+  numbers, not treated as data to work around:**
+  `models.tank.observed_demand_lpm` read `previous.actuator_on` to infer
+  the pump's inflow during an interval, but a real observation (and the
+  simulator's, identically) reports the actuator's state *before* the
+  decision for the upcoming interval is made — it cannot know that
+  decision yet. `current.actuator_on`, recorded after that decision was
+  applied, is the one that actually governed the interval.
+  `tests/test_temporal.py` had already worked around this by hand-shifting
+  `actuator_on` forward by one step in a synthetic fixture built
+  specifically for testing, with a comment saying so — proof the mismatch
+  was known but never fixed at the source, because no production code
+  path exercised the raw stream until this phase's `ScenarioRun.
+  observations` field did. Measured effect: recovered demand ranged
+  -29.7 to +30.6 L/min before the fix (against a true profile maximum
+  under 1 L/min) and 0.01 to 0.96 L/min after — the fabricated values
+  were the entire reason random forest's first-pass MAE (0.003-0.13
+  depending on scenario) looked implausibly good; its dominant feature
+  was `service_level` (51%), an artifact of the bug, not a real signal.
+  Fixed by reading `current.actuator_on`; the fixture workaround was
+  deleted in favor of testing directly against `ScenarioRun.observations`.
+
+  **Measured** [simulated], `realistic_household`, 30 days, default
+  config, MAE/RMSE (L/min), validation then held-out test:
+
+  ```
+  model                   val_MAE  val_RMSE  test_MAE  test_RMSE
+  mean_baseline            0.2039    0.2391    0.2019    0.2464
+  linear_regression        0.0183    0.0276    0.0214    0.0325
+  random_forest            0.0177    0.0266    0.0227    0.0350
+  gradient_boosting        0.0192    0.0282    0.0228    0.0353  <- flagged
+  ```
+
+  Every tier beats the mean baseline by roughly 10x, as it should on a
+  target this close to a smooth, mildly-jittered diurnal curve. Random
+  forest edges out linear regression on validation MAE (0.0177 vs.
+  0.0183, ~3% relative); gradient boosting does not beat random forest and
+  `--train-demand-model` prints a warning for it rather than silently
+  listing it as a peer. Random forest's feature importance is now
+  dominated by `slot_mean_demand_lpm` (98%), the historical per-slot mean
+  — the sane result, given the target is a mostly-deterministic curve plus
+  jitter. Given random forest's edge over linear regression is small and
+  linear regression is far cheaper to run (one dot product vs. traversing
+  100 trees), **linear regression is Phase 5's chosen model, confirmed by
+  the author** (`ml.demand.SELECTED_MODEL`) — "final model chosen by
+  measured performance + Pi inference cost" is genuinely both-conditions
+  now, rather than accuracy alone standing in for a cost nobody measured.
+  Phase 12's actual Pi Zero benchmark can still overturn this if random
+  forest turns out cheap enough on-device that its small accuracy edge is
+  worth taking.*
 
 - [ ] **Phase 6 — Solar forecast**
   Persistence, historical profile, ML if it earns its place.

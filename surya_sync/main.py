@@ -89,6 +89,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="run the standard scenario set through the threshold and "
         "reactive controllers and print grid-energy comparison, then exit",
     )
+    parser.add_argument(
+        "--train-demand-model",
+        action="store_true",
+        help="build a demand dataset from the extended scenario set, train "
+        "the mean baseline / linear / random forest / gradient boosting "
+        "models, and print held-out MAE/RMSE per scenario, then exit",
+    )
     return parser.parse_args(argv)
 
 
@@ -241,6 +248,81 @@ def compare_schedulers(config: Config, versions: VersionStamp) -> int:
     return 0 if candidate_total < baseline_total else 6
 
 
+def train_demand_model(config: Config, versions: VersionStamp) -> int:
+    """Phase 5 exit criterion in executable form.
+
+    Builds a demand dataset from ``realistic_household`` (30 days, real
+    day-to-day demand variation and passing-cloud solar — see that
+    scenario's docstring for why the frozen ``extended_set``/
+    ``standard_set`` scenarios are the wrong shape of data for this: each
+    holds demand fixed for its whole duration, so a model can memorize one
+    day rather than learn a noisy pattern). Trains the mean baseline and
+    every ML tier on the chronological train split and reports both
+    validation and held-out test MAE/RMSE. Every number is **simulated**,
+    and the training target is demand *recovered from tank readings*
+    (``models.tank.observed_demand_series``), not the simulator's ground
+    truth — see ``ml.demand.dataset``.
+
+    "Baselines are mandatory before any fancier model" and "the next tier
+    must beat the previous one" (``CLAUDE.md``) are checked here, on
+    validation, not just asserted in a docstring: a tier that does not
+    improve on the previous one's validation MAE is flagged rather than
+    silently reported alongside the rest as if it had earned its place.
+
+    A threshold-controlled run generates the tank readings: this is about
+    the demand signal, not about which scheduler produced the pump's
+    on/off pattern the demand had to be inverted out of.
+    """
+    from surya_sync.experiments.runner import run_scenario
+    from surya_sync.ml.demand.baselines import MeanBaseline
+    from surya_sync.ml.demand.dataset import build_demand_dataset
+    from surya_sync.ml.demand.models import (
+        GradientBoostingDemandModel,
+        LinearDemandModel,
+        RandomForestDemandModel,
+    )
+    from surya_sync.ml.evaluation import mean_absolute_error, root_mean_squared_error
+    from surya_sync.models.pump import PumpModel
+    from surya_sync.scheduler.threshold import ThresholdScheduler
+    from surya_sync.simulator.scenarios import realistic_household
+
+    model_classes = [MeanBaseline, LinearDemandModel, RandomForestDemandModel, GradientBoostingDemandModel]
+    pump = PumpModel.from_config(config.pump)
+    scenario = realistic_household(config)
+
+    run = run_scenario(config, scenario, ThresholdScheduler(config.scheduler))
+    dataset = build_demand_dataset(
+        run.observations,
+        pump,
+        config.temporal.slot_minutes,
+        config.temporal.profile_min_samples,
+    )
+
+    print(f"SIMULATED results — not physical measurements ({scenario.days:g} days, {scenario.name!r})")
+    print(f"config_hash {versions.config_hash}   step {config.scheduler.step_minutes:g} min")
+    print(f"train={len(dataset.train)} val={len(dataset.val)} test={len(dataset.test)} examples")
+    print(f"{'model':20s} {'val_MAE':>9s} {'val_RMSE':>9s} {'test_MAE':>9s} {'test_RMSE':>9s}")
+
+    previous_val_mae = None
+    for cls in model_classes:
+        model = cls().fit(dataset.train.features, dataset.train.targets)
+        val_pred = model.predict(dataset.val.features)
+        test_pred = model.predict(dataset.test.features)
+        val_mae = mean_absolute_error(dataset.val.targets, val_pred)
+        val_rmse = root_mean_squared_error(dataset.val.targets, val_pred)
+        test_mae = mean_absolute_error(dataset.test.targets, test_pred)
+        test_rmse = root_mean_squared_error(dataset.test.targets, test_pred)
+        print(f"{cls.model_name:20s} {val_mae:9.4f} {val_rmse:9.4f} {test_mae:9.4f} {test_rmse:9.4f}")
+        if previous_val_mae is not None and val_mae >= previous_val_mae:
+            print(
+                f"  WARNING: {cls.model_name} did not improve on the previous "
+                f"tier's validation MAE ({val_mae:.4f} >= {previous_val_mae:.4f})",
+                file=sys.stderr,
+            )
+        previous_val_mae = val_mae
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -289,6 +371,9 @@ def main(argv: list[str] | None = None) -> int:
         # pure simulation fail for a reason that has nothing to do with it.
         # Phase 14 persists results, and then this moves back down.
         return run_scenarios(config, versions)
+
+    if args.train_demand_model:
+        return train_demand_model(config, versions)
 
     try:
         with Database(config.storage.database_path) as database:

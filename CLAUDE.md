@@ -146,22 +146,105 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 4 complete, and hardened. temporal/context.py (cyclic time
-encoding), temporal/profiles.py (per-slot historical means) and
-temporal/history.py (time-based lag/rolling features) are implemented,
-feeding ml/features/builder.py's 18-value FeatureVector.
-ObservationRepository.history() is implemented — the first repository
-method with real code in the project. Asked directly whether Phase 4 had
-been thoroughly debugged, the honest answer was no — the same author had
-written the code and the tests. An adversarial probing pass then found
-five latent bugs (see below), all fixed; 455 tests pass, up from 412 (449
-before hardening). --run-scenarios reproduces Phase 2's exact figures
-unchanged (0.56/0.00, 0.56/0.51, 0.94/0.38, 0.75/0.75 kWh pump/grid across
-sunny/cloudy/spike/low_start), confirming Phase 4 fed nothing into the
-decision path. temporal/adaptation.py stays a stub — see the
-carried-forward note below. Phase 5 (demand ML) is cleared to start: it
-now has a feature vector and, via models.tank.observed_demand_series, a
-target to train against.`
+`Phase: 5 complete, and hardened. ml/evaluation.py (chronological_split,
+MAE, RMSE — shared with Phase 6) and ml/demand/dataset.py
+(build_demand_dataset: fits SlotProfile on the train slice only, builds
+lag/rolling features from the full series since those only ever look
+backward) turn observed_demand_series into a train/val/test dataset.
+ml/demand/baselines.py (MeanBaseline) and ml/demand/models.py (Linear/
+RandomForest/GradientBoosting, scikit-learn, median-imputed) share one
+fit/predict shape. Asked to debug and optimize rather than accept the
+first-pass numbers, a real bug turned up: models.tank.observed_demand_lpm
+read previous.actuator_on instead of current.actuator_on, silently
+recovering demand from the wrong interval's pump state — fabricating
+values up to +/-30 L/min against a true profile max under 1 L/min, which
+is what had made random forest's first-pass 0.003 MAE look implausibly
+good (it was fitting service_level, an artifact of the bug, at 51%
+importance). Fixed; a new simulator.scenarios.realistic_household (30
+days, real day-to-day demand jitter, unlike the frozen extended_set
+scenarios which hold demand fixed for controller-comparison reasons) is
+now what --train-demand-model trains against, reporting validation *and*
+test MAE/RMSE and flagging any tier that fails to beat the previous one's
+validation score. Corrected numbers: mean 0.204, linear 0.018, random
+forest 0.018 (wins by ~3%), gradient boosting 0.019 (flagged — doesn't
+beat random forest) — all L/min, validation MAE. Given random forest's
+edge is marginal and linear regression is far cheaper on a Pi Zero, linear
+regression is Phase 5's chosen model, confirmed by the author
+(`ml.demand.SELECTED_MODEL`), pending Phase 12's actual inference-cost
+benchmark. 484 tests pass, up from 455. See
+ROADMAP.md's Phase 5 entry and PROJECT_JOURNEY.md's "Phase 5 hardened"
+entry for the full debugging trail. Phase 6 (solar forecast) is cleared
+to start.`
+
+Carried out of Phase 5's hardening pass — a real bug, found by checking
+first-pass numbers that looked too good rather than accepting them (same
+discipline as Phase 4's hardening pass):
+- **`observed_demand_lpm` read the wrong observation's `actuator_on`.**
+  It used `previous.actuator_on` to infer the pump's inflow during
+  `[previous.timestamp, current.timestamp)`. But a real control loop (and
+  the simulator, identically) observes, *then* decides, *then* acts — so
+  an observation reports the actuator's state as left by the *previous*
+  decision, not the one about to govern the interval starting there.
+  `current.actuator_on`, recorded after that governing decision was
+  applied, is the correct one. `tests/test_temporal.py` had a hand-built
+  fixture helper (`_observations_from_steps`) that manually shifted
+  `actuator_on` forward by one step, with a comment explaining why —
+  proof the mismatch was known but only ever patched around in a test
+  fixture, never fixed at the source, because no production path
+  exercised the raw stream until this phase's `ScenarioRun.observations`
+  field did. Fixed by reading `current.actuator_on`; the fixture
+  workaround was deleted and the affected tests now run against
+  `run.observations` directly — the real stream, not a corrected stand-in.
+- **Measured effect of the fix**, `realistic_household`, `sunny`-style
+  demand: recovered values ranged -29.7 to +30.6 L/min before the fix
+  (against a true profile maximum under 1 L/min) and 0.01 to 0.96 L/min
+  after. Random forest's first-pass MAE (0.003-0.13 depending on
+  scenario, implausibly good) was fitting the bug, not the household:
+  `service_level` carried 51% of its feature importance before the fix,
+  an artifact of the corrupted target, and dropped to a normal supporting
+  role (~0.1%) after — `slot_mean_demand_lpm` (98%) took over, the sane
+  result for a mostly-deterministic curve plus jitter.
+- **The frozen `extended_set`/`standard_set` scenarios were the wrong
+  data for ML from the start, independent of the bug.**
+  `_household_demand()`'s default `jitter=0.0` means every one of their
+  30 days is bit-for-bit identical at the same time-of-day — a model can
+  memorize one day and replay it, which was flattering tree ensembles
+  before the bug ever mattered. Added `simulator.scenarios.
+  realistic_household` (real day-to-day demand jitter via the existing
+  `signed_noise`, passing-cloud solar via the existing `IntermittentProfile`
+  — both still pure functions of time, no hard-rule conflict) as a
+  separate scenario for ML use; `extended_set`/`standard_set` are
+  untouched and still frozen for Phase 2/3's controller-comparison
+  figures.
+- **The validation split existed since the first pass but was never
+  actually used for anything.** `main.py --train-demand-model` now
+  reports validation MAE/RMSE alongside test, and warns (rather than
+  silently listing as a peer) when a tier fails to beat the previous
+  tier's validation MAE — gradient boosting currently trips this warning
+  against random forest.
+- **Final numbers** [simulated], `realistic_household`, 30 days,
+  validation MAE (L/min): mean 0.204, linear 0.018, random forest 0.018
+  (edges out linear by ~3%), gradient boosting 0.019 (flagged). Given the
+  random-forest edge is marginal and linear regression is far cheaper on
+  a Pi Zero (one dot product vs. traversing 100 trees), linear regression
+  is the tentative choice pending Phase 12's actual inference-cost
+  benchmark — "final model chosen by measured performance + Pi inference
+  cost" is now a real joint call, not accuracy standing in for an
+  unmeasured cost.
+- **`ml/evaluation.py` is new, at `ml/` top level, not inside
+  `ml/demand/`.** `chronological_split`, `mean_absolute_error` and
+  `root_mean_squared_error` have nothing demand-specific in them, and
+  Phase 6's solar forecast needs the identical split and the identical
+  metrics — duplicating either into `ml/solar/` would let the two targets'
+  definitions of "the test set" or "the error" drift apart independently.
+- **`SlotProfile` walk-forward split stays train-only; lag/rolling features
+  stay full-series.** `SlotProfile.stats_for` keys only by
+  `(day_type, slot_index)`, not by date, so fitting it on the whole series
+  would leak a val/test-period mean into a training-period feature.
+  `demand_lag_*`/`demand_roll_*` only ever look strictly backward from
+  `moment`, so building them from the full series is safe for every
+  example regardless of split — a val/test moment's lookup can never
+  reach a timestamp later than itself.
 
 Carried out of Phase 4's hardening pass — five latent bugs, all found by
 probing rather than by the test suite the same author wrote alongside the

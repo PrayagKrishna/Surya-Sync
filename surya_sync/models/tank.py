@@ -348,8 +348,27 @@ def observed_demand_lpm(
 
     The inverse of ``TankModel.step``: given the volume change and the
     inflow the pump delivered, ``demand_lpm = inflow_lpm - (v1 - v0) / dt``.
-    ``previous.actuator_on`` governs, matching how
-    ``predict_tank_trajectory`` holds one action across a step.
+
+    ``current.actuator_on`` governs the inflow, **not**
+    ``previous.actuator_on``. This looks backwards next to
+    ``predict_tank_trajectory`` (which holds one action across a step,
+    read from the state *before* it), but the two functions face opposite
+    directions: ``predict_tank_trajectory`` is told an action to apply
+    going forward from a known state, while this function is handed two
+    readings *after the fact* and has to infer what happened between them.
+    A real control loop (and the simulator that mirrors it) observes,
+    *then* decides, *then* acts — so ``resource.observe()`` reports the
+    actuator's current state, which is whatever the *previous* decision
+    left it as, not the one about to govern the next interval. That means
+    ``current``, timestamped at the end of the interval being inverted, is
+    the reading taken *after* the decision that governed this interval was
+    applied, and its ``actuator_on`` is the one that ran during
+    ``[previous.timestamp, current.timestamp)``. Using ``previous`` here
+    silently reads the actuator state that governed the *preceding*
+    interval instead, and was verified in Phase 5 to fabricate demand
+    values far outside anything the demand profile can produce (up to
+    +/-30 L/min against a true peak under 1 L/min) — see the Phase 5
+    hardening note in ``CLAUDE.md``.
 
     Raises ``ValueError`` for a genuine caller mistake — mismatched
     resources, readings not in litres, or ``current`` at or before
@@ -403,7 +422,7 @@ def observed_demand_lpm(
     if dt_minutes == 0.0:
         return None
 
-    inflow_lpm = pump.inflow_lpm(previous.actuator_on)
+    inflow_lpm = pump.inflow_lpm(current.actuator_on)
     if current.service_level >= 1.0 - _BOUNDARY_TOLERANCE and inflow_lpm > 0.0:
         return None
     if current.service_level <= _BOUNDARY_TOLERANCE:
