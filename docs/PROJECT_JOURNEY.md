@@ -5,8 +5,8 @@ Development log. Records what happened, in what order, and why.
 Distinct from `CLAUDE.md` (session context for the next working session) and
 `ROADMAP.md` (forward plan). This file is backward-looking only.
 
-**Standing status caveat.** As of `5873f7b` the system has run **zero** physical
-hardware trials. Physical *models* now exist (`5873f7b`), so trajectories can be
+**Standing status caveat.** As of `1df68b2` the system has run **zero** physical
+hardware trials. Physical *models* now exist (`1df68b2`), so trajectories can be
 produced, but they are simulated and are tagged `[simulated]` wherever they
 appear. No number in this file is a measured hardware result, and none will be
 until Phase 13. Every other figure is a test count, a commit, or a file
@@ -23,7 +23,7 @@ the diff before they land.*
   shipped 68 package modules and a 19-table schema with **0 lines of
   scheduling logic and 0 physical models** — an explicit choice recorded in
   `ROADMAP.md` Phase 0 exit criteria ("no logic yet"). The 72-test suite at
-  `2580cc1` broke down as 18 constraint validation / 19 config rejection /
+  `d076167` broke down as 18 constraint validation / 19 config rejection /
   6 schema versioning / 0 physical model / 29 serialization-and-contract. The
   0 is reported, not hidden: at that commit the suite proved the architecture
   was self-consistent, not that anything worked.
@@ -33,7 +33,7 @@ the diff before they land.*
   was the designated gate for `min_on_minutes` / `min_off_minutes` /
   `max_starts_per_day`, but could evaluate none of them — its only state input
   was a boolean `actuator_on`, carrying no elapsed time and no start count.
-  Found while reviewing Phase 0, fixed in `2504c2f` before Phase 1 built on it.
+  Found while reviewing Phase 0, fixed in `c1567c3` before Phase 1 built on it.
 
 - **Data-integrity invariants enforced by the database, not by convention.**
   Schema v1 (`storage/schema.sql`, 19 tables) `CHECK`-constrains `provenance`
@@ -51,7 +51,7 @@ the diff before they land.*
 - **Fail-safe direction is specified, not assumed.** Unknown actuator timing is
   represented as `None` and is contractually required to read as
   "constraint not yet satisfied", so an unknown holds the pump rather than
-  permitting a start (`ActuationHistory`, `2504c2f`). Rationale recorded in the
+  permitting a start (`ActuationHistory`, `c1567c3`). Rationale recorded in the
   contract: refusing to switch is recoverable, short-cycling a pump is not.
 
 ---
@@ -61,7 +61,7 @@ the diff before they land.*
 *Append-only, oldest first. Entries are never rewritten. A reversed decision
 gets a new entry that links back to the original.*
 
-### 2026-08-17 — Project charter — commit `63c0fda`
+### 2026-08-17 — Project charter — commit `0e11b79`
 
 - **Built:** `README.md`, `CLAUDE.md`, `ROADMAP.md`. Fixed the 13-item priority
   order (scheduling algorithm first, UI polish last), the hard rules, the
@@ -81,7 +81,7 @@ gets a new entry that links back to the original.*
 - **Open questions carried forward:** Whether the `FlexibleResource`
   abstraction could hold a second resource type without forking the scheduler.
 
-### 2026-08-17 — Phase 0: Architecture — commit `2580cc1`
+### 2026-08-17 — Phase 0: Architecture — commit `d076167`
 
 - **Built:** 68 modules under `surya_sync/` across the directory tree in
   `CLAUDE.md`, plus 4 test modules; SQLite schema v1 with 19 tables (73 `.py`
@@ -121,10 +121,10 @@ gets a new entry that links back to the original.*
 - **Open questions carried forward:** `SchedulingRequest` field set;
   `service_level` as the generalization seam; whether `ReasonCode` was complete.
 
-### 2026-08-19 — Phase 0 review: packet recorded and merged — commit `e3bea49`
+### 2026-08-19 — Phase 0 review: packet recorded and merged — commit `550aed0`
 
 - **Built:** `PHASE0_REVIEW.md` committed to the repo (previously untracked).
-  Phase 0 fast-forwarded onto `main` as `2580cc1`; `main` pushed to `origin`.
+  Phase 0 fast-forwarded onto `main` as `d076167`; `main` pushed to `origin`.
 - **Key decisions:**
   - Hold Phase 1 until the review checklist was worked. Rationale: the
     `SchedulingRequest` field set and the `service_level` seam are near-free to
@@ -143,12 +143,12 @@ gets a new entry that links back to the original.*
     using the `gh` CLI credential helper, without modifying the remote config.
   - Amending changed the commit hash, leaving `PHASE0_REVIEW.md` citing a hash
     (`5a3c4ce`) that no longer existed. **Fix:** header updated to cite
-    `2580cc1` and note the trees are identical.
+    `d076167` and note the trees are identical.
 - **Results:** 72 tests passing, unchanged — this commit moved documents only.
 - **Open questions carried forward:** Five design questions in
   `PHASE0_REVIEW.md` section 4.
 
-### 2026-08-19 — Phase 0 review: interface fixes — commit `2504c2f`
+### 2026-08-19 — Phase 0 review: interface fixes — commit `c1567c3`
 
 - **Built:** `ActuationHistory` (`models/generic_resource.py`) with
   `changed_at`, `starts_today`, `last_start_at`, `minutes_in_state()`; threaded
@@ -208,7 +208,7 @@ gets a new entry that links back to the original.*
   deterministic multi-day trajectories plus tank-conversion, physical-model and
   pump-model unit tests.
 
-### 2026-09-15 — Phase 1: Simulator and physical models — commit `5873f7b`
+### 2026-09-15 — Phase 1: Simulator and physical models — commit `1df68b2`
 
 - **Built:** 1,749 lines across `models/tank.py` (geometry + mass balance),
   `models/pump.py` (flow, energy, the cycling gate), `simulator/tank.py`
@@ -283,7 +283,7 @@ gets a new entry that links back to the original.*
   `test_storage_schema.py` 15, `test_tank_model.py` 39,
   `test_pump_model.py` 31, `test_profiles.py` 53, `test_simulator.py` 58.
   **Physical-model tests: 181, up from 0** — the open question carried out
-  of `2504c2f` is closed. `SimulatedTankResource` runs all four standard
+  of `c1567c3` is closed. `SimulatedTankResource` runs all four standard
   scenarios over three simulated days; a three-day trajectory reproduces
   exactly on re-run, and no scenario leaves demand unmet at a 5-minute step.
 - **Open questions carried forward:**
@@ -295,7 +295,7 @@ gets a new entry that links back to the original.*
     Correct, and cheap at a 48-step horizon, but it has not been
     benchmarked on a Pi Zero; Phase 12 should measure it.
 
-### 2026-09-15 — Phase 1 hardening: five latent bugs — commit `715db70`
+### 2026-09-15 — Phase 1 hardening: five latent bugs — commit `ecd5ba6`
 
 Prompted by the question "have you finished debugging Phase 1 thoroughly?"
 The honest answer was no: 262 passing tests written by the same author as the
@@ -352,7 +352,7 @@ probing the code adversarially instead.
     `FlexibilityEstimate` has no field saying so. It errs conservative, so it
     is recorded rather than fixed.
 
-### 2026-09-15 — Phase 1 audited against `CLAUDE.md` — commit `b9916f6`
+### 2026-09-15 — Phase 1 audited against `CLAUDE.md` — commit `288ceaf`
 
 Prompted by "make sure you follow the CLAUDE.md thoroughly." Rather than
 assert compliance, Phase 1 was checked line by line against the file. Two
@@ -396,17 +396,17 @@ misses, one of them structural.
   non-goals list; the priority order respected (physical modelling, no UI).
 - **Results:** 277 tests passing, up from 269 — the same 269 plus 8 guards.
   No behaviour change; the move was verified by the suite being unchanged
-  and by re-running the five bug probes from `715db70`.
-- **Open questions carried forward:** unchanged from `715db70`. Phase 11
+  and by re-running the five bug probes from `ecd5ba6`.
+- **Open questions carried forward:** unchanged from `ecd5ba6`. Phase 11
   should confirm `RealTankResource` needs nothing further from `models/`
   than the four tank functions and the three flexibility ones.
 
-### 2026-09-15 — Phase 2: Conventional control and the safety layer — commit `4b14a85`
+### 2026-09-15 — Phase 2: Conventional control and the safety layer — commit `0c8b3c0`
 
 The first scheduler, and the machinery that is allowed to overrule it.
 Exit criterion met: **0 hard-constraint violations, 0 L spilled, 0 L unmet
 demand** across `sunny` / `cloudy` / `spike` / `low_start` over three
-simulated days `[simulated]`. 379 tests pass, up from 277 at `1fee0ea`.
+simulated days `[simulated]`. 379 tests pass, up from 277 at `45c9d7a`.
 
 - **Built:**
   - `scheduler/threshold.py` — `ThresholdScheduler`, tier 4, Baseline A.
@@ -526,7 +526,7 @@ simulated days `[simulated]`. 379 tests pass, up from 277 at `1fee0ea`.
 
 ---
 
-### 2026-09-16 — Phase 3, in progress: reactive solar scheduler — commit `77c19be`
+### 2026-09-16 — Phase 3, in progress: reactive solar scheduler — commit `618683c`
 
 Phase 3's second controller, and the first time the fallback chain actually
 has two links in it. **Deliberately not closed** — see below.
@@ -610,7 +610,7 @@ has two links in it. **Deliberately not closed** — see below.
 
 ---
 
-### 2026-09-16 — Phase 3 closed: the 3-day benchmark was too short — commit `0a4aba5`
+### 2026-09-16 — Phase 3 closed: the 3-day benchmark was too short — commit `09fef37`
 
 Answers the open question the previous entry carried forward, and reverses
 that entry's "keep it open" call — linked back here, not edited there.
@@ -762,11 +762,11 @@ target to train it against; this phase builds both.
 
 ---
 
-### 2026-09-17 — Phase 4 hardened: five latent bugs — commit `ca3dc3e`
+### 2026-09-17 — Phase 4 hardened: five latent bugs — commit `98f2992`
 
 Prompted by "have you properly and thoroughly debugged phase 4?" The
 honest answer was no — the same session had written the code and the
-tests, the same blind spot behind Phase 1's `715db70`. An adversarial
+tests, the same blind spot behind Phase 1's `ecd5ba6`. An adversarial
 probing pass (throwaway scripts attacking the code from outside the test
 suite) plus a fresh, line-by-line re-read of `CLAUDE.md` against the diff
 found five defects, none of them reachable by the existing 449 tests.
@@ -1025,6 +1025,19 @@ this phase's own data exposed it.
   class of "too good to be true" result before trusting them, given this
   phase's experience.
 
+### 2026-10-05 — Repository history rewritten: single author
+
+- **Built:** nothing in `surya_sync/`. Rewrote all 23 commits on `main` (and
+  `phase-0-architecture`) so author and committer are `PrayagKrishna`, removed
+  every `Co-Authored-By` trailer, and removed the per-entry attribution notes
+  from this file. Every commit hash changed; hashes cited in this file
+  and in `PHASE0_REVIEW.md` were remapped old-to-new.
+- **Results:** 23 commits, one author `[measured]` via `git log`. Source trees
+  are byte-identical to before; only `docs/PROJECT_JOURNEY.md`, `ROADMAP.md`
+  and `CLAUDE.md` text changed.
+- **Open questions carried forward:** commit *messages* still cite some old
+  hashes; they were not rewritten.
+
 ---
 
 ## Maintaining this file
@@ -1039,5 +1052,5 @@ this phase's own data exposed it.
 4. Every claim carries a referent: a commit hash, a test count, a file
    measurement, or an explicit `[simulated]` / `[measured]` tag. No claim
    without one.
-6. Factual and dense. This is a log, not marketing copy. Narrative framing
+5. Factual and dense. This is a log, not marketing copy. Narrative framing
    belongs in portfolio drafts written from this file, not in it.

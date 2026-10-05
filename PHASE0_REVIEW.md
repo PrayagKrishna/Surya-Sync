@@ -3,9 +3,9 @@
 Prepared 2026-08-17 for review of branch `phase-0-architecture`.
 
 > **Status.** Reviewed 2026-08-18. The commit message was amended per
-> section 1 and the branch fast-forwarded onto `main` as `2580cc1` — the
+> section 1 and the branch fast-forwarded onto `main` as `d076167` — the
 > hash reviewed here, `5a3c4ce`, no longer exists. Sections 1-3 describe
-> the tree at `2580cc1`, which is byte-identical; only the message changed.
+> the tree at `d076167`, which is byte-identical; only the message changed.
 > Section 4 was worked on 2026-08-19; see section 5 for what changed. The
 > verbatim listings in section 2 predate those changes.
 
@@ -307,7 +307,7 @@ phase quietly weakens an invariant.
       two rule names generalized, see 5.5
 - [x] SQLite schema v1 — 19 tables and provenance `CHECK`s confirmed; two
       missing `CHECK`s added, see 5.4
-- [x] Decide whether `phase-0-architecture` fast-forwards onto `main` — yes, done (`2580cc1`)
+- [x] Decide whether `phase-0-architecture` fast-forwards onto `main` — yes, done (`d076167`)
 
 ---
 
