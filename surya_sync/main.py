@@ -96,6 +96,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "the mean baseline / linear / random forest / gradient boosting "
         "models, and print held-out MAE/RMSE per scenario, then exit",
     )
+    parser.add_argument(
+        "--train-solar-model",
+        action="store_true",
+        help="score persistence, smart persistence, the historical profile and "
+        "linear / random forest / gradient boosting solar forecasters on "
+        "PVGIS hourly data per lead time, then exit",
+    )
+    parser.add_argument(
+        "--solar-data",
+        default="data/reference/pvgis_bangalore_2020_2022.csv",
+        help="PVGIS seriescalc CSV for --train-solar-model",
+    )
     return parser.parse_args(argv)
 
 
@@ -323,6 +335,98 @@ def train_demand_model(config: Config, versions: VersionStamp) -> int:
     return 0
 
 
+def train_solar_model(config: Config, versions: VersionStamp, data_path: str) -> int:
+    """Phase 6 exit criterion in executable form.
+
+    Scores three baselines (persistence, clear-sky-index persistence, the
+    historical hour-of-day profile) and three ML tiers on a chronological
+    split of real PVGIS-ERA5 hourly output, per lead time. Every number is
+    **estimated** (a reanalysis through a PV model), not metered rooftop
+    data and not simulated: see ``ml.solar.data``.
+
+    ML is kept only if ``ml.solar.evaluation.earns_its_place`` says so: it
+    must beat the best baseline at every headline lead on validation and
+    overall on test. The rule is applied here, not just stated.
+    """
+    from surya_sync.ml.solar.baselines import (
+        HistoricalProfileBaseline,
+        PersistenceBaseline,
+        SmartPersistenceBaseline,
+    )
+    from surya_sync.ml.solar.data import DATA_VERSION, load_pvgis_hourly, require_matches_config
+    from surya_sync.ml.solar.dataset import HEADLINE_LEADS, build_solar_dataset
+    from surya_sync.ml.solar.evaluation import earns_its_place, score_method
+    from surya_sync.ml.solar.models import (
+        GradientBoostingSolarModel,
+        LinearSolarModel,
+        RandomForestSolarModel,
+    )
+    from surya_sync.models.solar import ClearSkyModel
+
+    try:
+        meta, series = load_pvgis_hourly(data_path)
+        require_matches_config(meta, config.solar)
+    except (OSError, ValueError) as exc:
+        print(f"solar data error: {exc}", file=sys.stderr)
+        return 2
+
+    dataset = build_solar_dataset(series, ClearSkyModel.from_config(config.solar))
+    print(
+        f"ESTIMATED results ({meta.database} reanalysis through a PV model, {DATA_VERSION}) "
+        "— not rooftop measurements, not simulated"
+    )
+    print(f"config_hash {versions.config_hash}   {len(series)} hourly points, daylight targets only")
+    print(f"train={len(dataset.train)} val={len(dataset.val)} test={len(dataset.test)} examples")
+
+    baselines = [
+        PersistenceBaseline().fit((), ()),
+        SmartPersistenceBaseline().fit((), ()),
+        HistoricalProfileBaseline(dataset.slot_profile).fit((), ()),
+    ]
+    ml_models = [
+        model.fit(dataset.train.features, dataset.train.targets)
+        for model in (LinearSolarModel(), RandomForestSolarModel(), GradientBoostingSolarModel())
+    ]
+    baseline_scores = [score_method(m, dataset) for m in baselines]
+    ml_scores = [score_method(m, dataset) for m in ml_models]
+
+    print(f"\n{'method':20s} {'val_MAE':>8s} {'val_RMSE':>9s} {'test_MAE':>9s} {'test_RMSE':>10s}  (kW, all leads)")
+    for score in baseline_scores + ml_scores:
+        print(
+            f"{score.name:20s} {score.val_mae:8.4f} {score.val_rmse:9.4f} "
+            f"{score.test_mae:9.4f} {score.test_rmse:10.4f}"
+        )
+
+    lead_header = " ".join(f"{h:>5d}h" for h in HEADLINE_LEADS)
+    for split in ("val", "test"):
+        print(f"\n{split} MAE by lead (kW)   {lead_header}")
+        for score in baseline_scores + ml_scores:
+            by_lead = score.val_mae_by_lead if split == "val" else score.test_mae_by_lead
+            print(f"{score.name:20s} " + " ".join(f"{by_lead[h]:6.3f}" for h in HEADLINE_LEADS))
+
+    print("\nkeep-ML rule (beat the best baseline at every headline lead on val, and overall on test):")
+    previous = None
+    for score in ml_scores:
+        kept, reasons = earns_its_place(score, baseline_scores)
+        print(f"  {score.name:20s} {'KEPT' if kept else 'REJECTED'}")
+        for reason in reasons:
+            print(f"      {reason}")
+        if previous is not None:
+            change = 100.0 * (score.val_mae - previous.val_mae) / previous.val_mae
+            print(
+                f"      vs {previous.name}: val MAE {change:+.1f}%, test MAE "
+                f"{100.0 * (score.test_mae - previous.test_mae) / previous.test_mae:+.1f}%"
+            )
+            if score.val_mae >= previous.val_mae:
+                print(
+                    f"  WARNING: {score.name} did not improve on the previous tier's "
+                    "validation MAE",
+                    file=sys.stderr,
+                )
+        previous = score
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -374,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.train_demand_model:
         return train_demand_model(config, versions)
+    if args.train_solar_model:
+        return train_solar_model(config, versions, args.solar_data)
 
     try:
         with Database(config.storage.database_path) as database:

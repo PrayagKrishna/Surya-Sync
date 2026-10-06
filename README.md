@@ -80,7 +80,8 @@ Actively in development, following a 16-phase roadmap (see [`ROADMAP.md`](ROADMA
 | 3 | Solar-reactive control | ✅ Complete |
 | 4 | Temporal feature engineering | ✅ Complete |
 | 5 | Demand ML (mean baseline → linear → random forest → gradient boosting) | ✅ Complete |
-| 6–16 | Solar forecast → MPC → hardware → frontend | 🚧 Next |
+| 6 | Solar forecast (persistence, historical profile, linear/forest/boosting on real PVGIS data) | ✅ Complete |
+| 7–16 | Predictive heuristic → MPC → hardware → frontend | 🚧 Next |
 
 The first scheduler exists as of Phase 2: a conventional threshold
 controller, which is the **baseline** every later phase has to beat, not the
@@ -226,6 +227,25 @@ provisional call, pending Phase 12's actual on-device benchmark. See
 `ROADMAP.md`'s Phase 5 entry for how a real bug (an actuator-timing
 mix-up that fabricated demand values up to +/-30 L/min) was found and
 fixed before these numbers were trusted.
+
+### Solar forecast quickstart
+
+Same `ml` extra. Scores three baselines (persistence, clear-sky-index
+persistence, historical profile) and three ML tiers on 3 years of real hourly
+weather from PVGIS-ERA5 (`data/reference/`, (c) European Union), per lead time
+from 1 to 24 hours. Not simulated: the simulator's clouds have no memory, so
+there is nothing for a forecaster to learn from them. Not rooftop data either:
+a reanalysis through a PV model, reported as **estimated**. Takes about a
+minute.
+
+```bash
+.venv/bin/python -m surya_sync.main --train-solar-model
+```
+
+Linear regression (`ml.solar.SELECTED_MODEL`) cuts error 27% below the best
+baseline on held-out test data (0.175 vs 0.241 kW), tied with random forest
+and gradient boosting and far cheaper for a Pi Zero. See `ROADMAP.md`'s Phase 6
+entry for the per-lead table and its caveats.
 
 ## License
 

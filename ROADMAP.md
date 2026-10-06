@@ -183,9 +183,126 @@ closes.
   forest turns out cheap enough on-device that its small accuracy edge is
   worth taking.*
 
-- [ ] **Phase 6 — Solar forecast**
+- [x] **Phase 6 — Solar forecast**
   Persistence, historical profile, ML if it earns its place.
   Exit: ML only kept if it beats both baselines on held-out data.
+  *Met: all three ML tiers beat the best baseline; linear regression is the
+  chosen model (`ml.solar.SELECTED_MODEL`), confirmed by the author.*
+
+  *Phase 6 [estimated]: scored on real weather, not on the simulator.*
+
+  **Why not the simulator's solar.** `IntermittentProfile`'s cloud factor is
+  independent from one 20-minute slot to the next, so a forecaster has
+  nothing to learn beyond the clear-sky curve and every method would tie for
+  an artifact reason (the same trap as Phase 5's demand data). The author
+  chose real data over a new simulated scenario, because a scenario we build
+  hands the models the pattern we put in it.
+
+  **Data.** PVGIS-ERA5 hourly output for a 3 kWp, 13° tilt, 20% loss array at
+  12.97N 77.59E, 2020-2022 (`data/reference/pvgis_bangalore_2020_2022.csv`,
+  26,304 rows, (c) European Union). A reanalysis through a PV model, **not**
+  a rooftop meter: `Provenance.ESTIMATED`, never `MEASURED`. Hourly, one
+  site, one nominal system. The clear-sky curve correlates best with it at
+  zero time shift (r=0.913, vs 0.896 at -30 min, 0.905 at +30 min). Phase
+  13's inverter data is the real check.
+
+  **Built.** `ml/solar/data.py` (loader, UTC -> local +5:30, header parsed;
+  `require_matches_config` refuses data for a different site or kWp),
+  `dataset.py` (13 pinned features, leads 1-12/18/24 h, daylight-only
+  targets, split by *target* time, historical profile fit on train only),
+  `baselines.py` (persistence, clear-sky-index "smart" persistence,
+  historical hour-of-day profile), `models.py` (per-lead clear-sky-index
+  linear / random forest / gradient boosting), `evaluation.py` (per-lead
+  scoring and `earns_its_place`), `main.py --train-solar-model`.
+  `models/solar.py` (new) holds the clear-sky geometry moved out of
+  `simulator/solar.py`; `simulator.solar.ClearSkyProfile` is now
+  `ClearSkyModel` + `SolarProfile` and behaves identically.
+  `ml.features.builder.to_matrix` is now shared by demand and solar.
+  518 tests pass, up from 484.
+
+  **The keep-ML rule, fixed before the final numbers:** a tier is kept only
+  if its validation MAE beats the best baseline *at each of the 1/3/6/12/24 h
+  leads*, and its test MAE beats the best baseline overall. Daylight targets
+  only: below 0.05 kW of clear-sky output the forecast is exactly zero by
+  geometry, so scoring night would add the same free zero to every method.
+
+  **Results** `[estimated]`, `--train-solar-model`, train 2020-01-01..
+  2022-02-06 (125,520 examples), val ..2022-07-20 (27,636), test 2022-07-21..
+  2022-12-31 (26,712); MAE/RMSE in kW, all leads pooled; mean test daylight
+  output 0.875 kW:
+  ```
+  method              val_MAE val_RMSE test_MAE test_RMSE
+  persistence          0.8398   1.0469   0.7460    0.9291
+  smart_persistence    0.3944   0.5397   0.4036    0.5455
+  historical_profile   0.2495   0.3360   0.2411    0.3386
+  linear_regression    0.1277   0.2055   0.1754    0.2536
+  random_forest        0.1226   0.2027   0.1744    0.2547
+  gradient_boosting    0.1223   0.2019   0.1756    0.2554
+
+  test MAE by lead        1h     3h     6h    12h    24h
+  smart_persistence    0.143  0.294  0.427  0.568  0.199
+  historical_profile   0.241  0.241  0.241  0.241  0.241
+  linear_regression    0.115  0.167  0.182  0.186  0.188
+  random_forest        0.098  0.158  0.184  0.190  0.193
+  gradient_boosting    0.100  0.159  0.185  0.190  0.197
+  ```
+  Linear is 49% below the best baseline on validation and 27% below on
+  test. All three tiers are KEPT.
+
+  **Model shape was chosen on validation only, after a first design failed.**
+  The first pass was one pooled model predicting kW (test seen: 0.1937 linear,
+  0.1817 gradient boosting). It lost to smart persistence at the 1 h lead on
+  test (0.147 vs 0.143), which prompted the redesign — so test was *seen*
+  before the redesign, and that is stated here rather than hidden. Four
+  shapes were then compared on **validation** MAE (linear / gradient
+  boosting): pooled kW 0.167/0.131; per-lead kW 0.152/0.125; pooled
+  clear-sky-index 0.133/0.126; **per-lead clear-sky-index 0.128/0.122**
+  (chosen). Test was not consulted for the choice, and per-lead
+  clear-sky-index fits were scored on test once, by the CLI above. Weighting
+  the fit toward high-sun hours was tried and rejected (no gain). Two ideas
+  carry it: predict the clear-sky index so the model learns only weather (the
+  sun's own motion is exact geometry), and one model per lead, since how far
+  to trust "cloudy now" differs between 1 h and 12 h and a pooled linear
+  model has one coefficient for all of them (1 h error 0.090 per-lead vs
+  0.133 pooled, validation).
+
+  **Caveats, stated not buried.**
+  (1) The tiers tie on test: random forest vs linear -0.6% test MAE, gradient
+  boosting vs random forest +0.7% (worse). The ~4% validation edge for trees
+  does not survive to test, so linear is chosen on Pi Zero cost, not
+  accuracy. Phase 12's benchmark can still overturn it.
+  (2) Test is harder than validation: every ML tier is ~37-44% worse on test
+  while the historical profile is not (0.2495 -> 0.2411). Validation covers
+  Feb-Jul 2022 and test Jul-Dec 2022 (monsoon and after), so the margin over
+  the best baseline shrinks from 49% to 27%. One test window, not a
+  confidence interval.
+  (3) At the 24 h lead the ML tiers barely beat persistence on test (0.188 vs
+  0.199, 5%): day-ahead skill is thin here.
+  (4) Reanalysis, hourly, one site. Not rooftop data.
+  (5) The full command takes about 76 s (random forest and boosting fit 14
+  models each); the tests do not run it.
+
+  **Leak checks.** Target-time spans of the three splits are disjoint and
+  chronological (`test_split_is_chronological_by_target_time_and_daylight_only`);
+  rewriting every reading after the issue time leaves the feature vector
+  unchanged at leads 1/6/12/24
+  (`test_no_feature_ever_reads_the_future`); the historical profile is
+  identical when val/test days are altered
+  (`test_the_historical_profile_never_sees_validation_or_test_days`).
+
+  **Carried into Phase 7:**
+  - **The simulator cannot show forecast skill.** Its clouds are independent
+    per slot, so in simulation a forecaster can only know "clear-sky times the
+    average"; the persistence skill measured above does not exist there. Phase
+    7's exit ("beats reactive on solar fraction in simulation") would
+    understate a good forecast. Candidate fix: a simulator `SolarProfile` that
+    replays the PVGIS series as a pure function of time. Needs the author's
+    call.
+  - Hourly leads 1-12 come from one fitted object; no `Forecast` producer
+    exists yet (Phase 7 builds it; `forecast_value_at` already holds hourly
+    points across 15-minute steps).
+  - A live Pi needs at least 24 h of PV readings (`ksi_mean_24h`,
+    `ksi_yesterday_at_target`); Phase 11/13 must supply them.
 
 - [ ] **Phase 7 — Predictive heuristic**
   Combines demand + solar forecasts without full optimization.

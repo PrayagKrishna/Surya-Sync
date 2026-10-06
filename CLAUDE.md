@@ -146,35 +146,53 @@ root cause → fix → regression test. No shotgun debugging.
 > Update this line at the start/end of each session so the next session
 > knows where things stand.
 
-`Phase: 5 complete, and hardened. ml/evaluation.py (chronological_split,
-MAE, RMSE — shared with Phase 6) and ml/demand/dataset.py
-(build_demand_dataset: fits SlotProfile on the train slice only, builds
-lag/rolling features from the full series since those only ever look
-backward) turn observed_demand_series into a train/val/test dataset.
-ml/demand/baselines.py (MeanBaseline) and ml/demand/models.py (Linear/
-RandomForest/GradientBoosting, scikit-learn, median-imputed) share one
-fit/predict shape. Asked to debug and optimize rather than accept the
-first-pass numbers, a real bug turned up: models.tank.observed_demand_lpm
-read previous.actuator_on instead of current.actuator_on, silently
-recovering demand from the wrong interval's pump state — fabricating
-values up to +/-30 L/min against a true profile max under 1 L/min, which
-is what had made random forest's first-pass 0.003 MAE look implausibly
-good (it was fitting service_level, an artifact of the bug, at 51%
-importance). Fixed; a new simulator.scenarios.realistic_household (30
-days, real day-to-day demand jitter, unlike the frozen extended_set
-scenarios which hold demand fixed for controller-comparison reasons) is
-now what --train-demand-model trains against, reporting validation *and*
-test MAE/RMSE and flagging any tier that fails to beat the previous one's
-validation score. Corrected numbers: mean 0.204, linear 0.018, random
-forest 0.018 (wins by ~3%), gradient boosting 0.019 (flagged — doesn't
-beat random forest) — all L/min, validation MAE. Given random forest's
-edge is marginal and linear regression is far cheaper on a Pi Zero, linear
-regression is Phase 5's chosen model, confirmed by the author
-(`ml.demand.SELECTED_MODEL`), pending Phase 12's actual inference-cost
-benchmark. 484 tests pass, up from 455. See
-ROADMAP.md's Phase 5 entry and PROJECT_JOURNEY.md's "Phase 5 hardened"
-entry for the full debugging trail. Phase 6 (solar forecast) is cleared
-to start.`
+`Phase: 6 complete. Solar forecast scored on real PVGIS-ERA5 hourly data
+(data/reference/, Provenance.ESTIMATED — a reanalysis through a PV model, not
+a rooftop meter), because the simulator's per-slot-independent clouds give a
+forecaster nothing to learn. ml/solar/: data.py (loader, config-match check),
+dataset.py (13 pinned features, leads 1-12/18/24 h, daylight-only, split by
+target time), baselines.py (persistence, clear-sky-index persistence,
+historical profile), models.py (per-lead clear-sky-index linear/RF/GB),
+evaluation.py (earns_its_place rule), main.py --train-solar-model.
+models/solar.py (new) holds the clear-sky geometry, moved out of simulator/
+after test_interfaces caught ml/ importing the simulator. Measured
+[estimated], test MAE kW: persistence 0.746, smart persistence 0.404,
+historical profile 0.241, linear 0.175, random forest 0.174, gradient
+boosting 0.176 — all three ML tiers KEPT; linear is the chosen model
+(ml.solar.SELECTED_MODEL), confirmed by the author, on Pi Zero cost since the
+tiers tie on test. 518 tests pass, up from 484. See ROADMAP.md's Phase 6
+entry for the per-lead table, the model-shape search (validation only, after
+a first pooled design lost to smart persistence at 1 h on test) and caveats.
+Phase 7 (predictive heuristic) is cleared to start, but read the carried-
+forward trap below first.`
+
+Carried out of Phase 6:
+- **The simulator cannot show forecast skill.** Its clouds are independent per
+  20-minute slot, so in simulation a forecaster can only know "clear-sky
+  times the average"; the persistence skill measured on PVGIS (smart
+  persistence at 1 h: 0.143 kW vs 0.241 for the profile, test) does not exist
+  there. Phase 7's exit criterion ("beats reactive on solar fraction in
+  simulation") would understate a good forecast. Candidate fix: a simulator
+  `SolarProfile` that replays the PVGIS series as a pure function of time —
+  needs the author's call, do not build it unasked.
+- **Clear-sky physics lives in `models/solar.py`, not `simulator/`.**
+  `ml/solar/dataset.py` first imported `ClearSkyProfile` from the simulator
+  and `test_production_layers_never_import_the_simulator[ml]` failed — the
+  layering rule doing its job. `simulator.solar.ClearSkyProfile` is now
+  `ClearSkyModel` + `SolarProfile`, behaviour unchanged.
+- **Predict the clear-sky index, one model per lead.** Chosen on validation
+  among four shapes (see ROADMAP). Test was seen once before the redesign
+  (the first pooled design lost to smart persistence at 1 h on test) —
+  recorded, not hidden. The tiers tie on test (RF vs linear -0.6%, GB vs RF
+  +0.7%); the ~4% validation edge for trees did not carry over.
+- **Test is harder than validation.** Every ML tier is ~37-44% worse on test
+  while the historical profile is not; the margin over the best baseline
+  shrinks from 49% (val) to 27% (test). Different seasons, one window.
+- **Hourly forecasts, no `Forecast` producer yet.** Phase 7 builds it from
+  `SELECTED_MODEL` + `ml.solar.dataset.build_solar_features`. A live Pi needs
+  >= 24 h of PV readings (`ksi_mean_24h`, `ksi_yesterday_at_target`).
+- **`--train-solar-model` takes ~76 s** (RF and GB fit 14 per-lead models
+  each). The test suite deliberately does not run it.
 
 Carried out of Phase 5's hardening pass — a real bug, found by checking
 first-pass numbers that looked too good rather than accepting them (same
@@ -248,7 +266,7 @@ discipline as Phase 4's hardening pass):
 
 Carried out of Phase 4's hardening pass — five latent bugs, all found by
 probing rather than by the test suite the same author wrote alongside the
-code (same blind spot as Phase 1's `715db70`):
+code (same blind spot as Phase 1's `ecd5ba6`):
 - **`rolling_stats` silently dropped the oldest sample on every single
   call at a normal control cadence, not as a rare edge case.** The window
   excluded both edges; on a 15-minute step with a 60-minute window, the

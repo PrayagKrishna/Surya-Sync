@@ -24,15 +24,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import Pipeline
 
-from surya_sync.ml.features.builder import FeatureVector
-
-
-def _to_matrix(features: tuple[FeatureVector, ...]) -> np.ndarray:
-    """``None`` -> ``np.nan``, so ``SimpleImputer`` can see the gaps."""
-    return np.array(
-        [[np.nan if v is None else v for v in fv.values] for fv in features],
-        dtype=float,
-    )
+from surya_sync.ml.features.builder import FeatureVector, to_matrix
 
 
 class _SklearnDemandModel:
@@ -57,11 +49,11 @@ class _SklearnDemandModel:
     ) -> "_SklearnDemandModel":
         if len(features) == 0:
             raise ValueError("cannot fit on an empty training set")
-        self._pipeline.fit(_to_matrix(features), np.array(targets, dtype=float))
+        self._pipeline.fit(to_matrix(features), np.array(targets, dtype=float))
         return self
 
     def predict(self, features: tuple[FeatureVector, ...]) -> tuple[float, ...]:
-        predictions = self._pipeline.predict(_to_matrix(features))
+        predictions = self._pipeline.predict(to_matrix(features))
         return tuple(float(p) for p in predictions)
 
 

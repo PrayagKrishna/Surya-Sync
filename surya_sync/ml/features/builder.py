@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+import numpy as np
+
 from surya_sync.domain import Provenance, TimedValue
 from surya_sync.temporal.context import build_temporal_context
 from surya_sync.temporal.history import rolling_stats, value_at, value_at_lag
@@ -144,4 +146,16 @@ def build_feature_vector(
         values=tuple(values[name] for name in FEATURE_NAMES),
         feature_set_version=FEATURE_SET_VERSION,
         provenance=provenance,
+    )
+
+
+def to_matrix(features: tuple[FeatureVector, ...]) -> np.ndarray:
+    """``None`` -> ``np.nan``, so ``SimpleImputer`` can see the gaps.
+
+    Shared by every sklearn-backed model (demand, solar) so the missing-value
+    convention lives in one place.
+    """
+    return np.array(
+        [[np.nan if v is None else v for v in fv.values] for fv in features],
+        dtype=float,
     )

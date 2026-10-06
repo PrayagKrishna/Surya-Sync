@@ -40,6 +40,10 @@ PV_MODEL_VERSION = "1.0.0"
 attribution rule in ``simulator/``. Refined in Phase 6, when a forecast
 replaces the geometry."""
 
+SOLAR_FEATURE_SET_VERSION = "solar-features-1.0.0"
+"""``ml.solar.dataset.SOLAR_FEATURE_NAMES``. Same reasoning as
+``FEATURE_SET_VERSION`` below for staying off ``VersionStamp``."""
+
 FEATURE_SET_VERSION = "features-1.0.0"
 """``ml.features.builder.FEATURE_NAMES`` — the ordering and definition of
 the feature vector. Not a ``VersionStamp`` field: every ``VersionStamp``
