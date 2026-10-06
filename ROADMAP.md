@@ -218,7 +218,7 @@ closes.
   `simulator/solar.py`; `simulator.solar.ClearSkyProfile` is now
   `ClearSkyModel` + `SolarProfile` and behaves identically.
   `ml.features.builder.to_matrix` is now shared by demand and solar.
-  518 tests pass, up from 484.
+  519 tests pass, up from 484.
 
   **The keep-ML rule, fixed before the final numbers:** a tier is kept only
   if its validation MAE beats the best baseline *at each of the 1/3/6/12/24 h
@@ -281,6 +281,13 @@ closes.
   (4) Reanalysis, hourly, one site. Not rooftop data.
   (5) The full command takes about 76 s (random forest and boosting fit 14
   models each); the tests do not run it.
+
+  (6) Timestamp convention (checked against the PVGIS manual): values are
+  hourly *means* stamped at the hour's centre. The code treats a stamp as an
+  interval centre, an issue time as the end of that interval, and lead L as
+  the L-th hourly interval ahead; read that way nothing leaks. A live Pi must
+  therefore feed a completed 60-minute PV mean, not an instantaneous reading
+  (Phase 7: at 15-minute control steps use a rolling 60-minute mean).
 
   **Leak checks.** Target-time spans of the three splits are disjoint and
   chronological (`test_split_is_chronological_by_target_time_and_daylight_only`);

@@ -56,6 +56,14 @@ def load_pvgis_hourly(
     correlates best with this series at zero shift (r=0.913, vs 0.896 at
     -30 min and 0.905 at +30 min) so no half-hour correction is applied.
 
+    Timestamp meaning (PVGIS manual: reanalysis values are the *average over
+    the hour*, stamped at the hour's centre): each ``TimedValue.at`` is the
+    **centre** of an hourly mean. A forecast "issued at" a stamp ``t`` is
+    therefore issued at the *end* of the interval centred on ``t`` — the
+    moment that mean is complete — and lead ``L`` means the ``L``-th hourly
+    interval after it. Read this way no feature sees the future. Reading
+    ``t`` as an instantaneous issue time would leak ~30 minutes.
+
     Raises on a missing or malformed header, on an empty body, and on
     timestamps that are not strictly increasing — every downstream split
     assumes chronological order and does not sort.

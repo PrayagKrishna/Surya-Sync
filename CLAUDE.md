@@ -160,7 +160,7 @@ after test_interfaces caught ml/ importing the simulator. Measured
 historical profile 0.241, linear 0.175, random forest 0.174, gradient
 boosting 0.176 — all three ML tiers KEPT; linear is the chosen model
 (ml.solar.SELECTED_MODEL), confirmed by the author, on Pi Zero cost since the
-tiers tie on test. 518 tests pass, up from 484. See ROADMAP.md's Phase 6
+tiers tie on test. 519 tests pass, up from 484. See ROADMAP.md's Phase 6
 entry for the per-lead table, the model-shape search (validation only, after
 a first pooled design lost to smart persistence at 1 h on test) and caveats.
 Phase 7 (predictive heuristic) is cleared to start, but read the carried-

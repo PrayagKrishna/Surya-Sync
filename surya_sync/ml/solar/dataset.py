@@ -1,7 +1,10 @@
 """Turn an hourly PV series into a lead-time solar forecasting dataset.
 
 One example = "standing at ``issue_time`` with everything observed up to
-then, what will the array deliver at ``issue_time + lead``?" Leads 1-12 h
+then, what will the array deliver at ``issue_time + lead``?" (Series stamps
+are the centres of hourly means, so ``issue_time`` is the end of the hour
+just completed and ``lead`` counts hourly intervals ahead; see
+``ml.solar.data.load_pvgis_hourly``.) Leads 1-12 h
 cover the scheduler's 720-minute horizon at hourly spacing; 18 and 24 h
 cover the day-ahead case.
 

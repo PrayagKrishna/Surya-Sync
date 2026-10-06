@@ -62,6 +62,10 @@ def earns_its_place(
     candidate: MethodScore, baselines: list[MethodScore]
 ) -> tuple[bool, list[str]]:
     """Apply the two-part rule above. Returns ``(verdict, reasons it failed)``."""
+    for score in (candidate, *baselines):
+        absent = [h for h in HEADLINE_LEADS if h not in score.val_mae_by_lead]
+        if absent:
+            raise ValueError(f"{score.name} has no validation score at leads {absent}")
     failures: list[str] = []
     for lead in HEADLINE_LEADS:
         best = min(b.val_mae_by_lead[lead] for b in baselines)

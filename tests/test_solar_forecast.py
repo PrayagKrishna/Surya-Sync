@@ -312,6 +312,12 @@ def test_ml_is_kept_only_if_it_beats_the_best_baseline_at_every_headline_lead_an
     assert not ok and "test overall" in why[0]
 
 
+def test_the_rule_refuses_scores_that_miss_a_headline_lead():
+    short = _score("short", 0.3, 0.3, {1: 0.3})
+    with pytest.raises(ValueError, match="no validation score"):
+        earns_its_place(short, [_score("b", 0.5, 0.5)])
+
+
 def test_best_baseline_is_chosen_per_lead_not_overall():
     good_early = _score("early", 0.9, 0.9, {lead: (0.1 if lead <= 3 else 0.9) for lead in LEAD_HOURS})
     good_late = _score("late", 0.9, 0.9, {lead: (0.9 if lead <= 3 else 0.1) for lead in LEAD_HOURS})

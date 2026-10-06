@@ -1038,6 +1038,86 @@ this phase's own data exposed it.
 - **Open questions carried forward:** commit *messages* still cite some old
   hashes; they were not rewritten.
 
+### 2026-10-05 — Phase 6 started: solar forecast, real data chosen over simulated clouds — uncommitted
+
+- **Decision:** the simulator's clouds are independent per 20-minute slot
+  (`IntermittentProfile`), so no forecaster can beat the clear-sky curve on
+  them; every method would tie for an artifact reason, as Phase 5's demand
+  data did. Options were real PVGIS data or a new simulated scenario with
+  clouds that last for hours. **Author's call: real PVGIS-ERA5 data**, since
+  a scenario built by us would hand the models the pattern we put in it.
+- **Built:** `data/reference/pvgis_bangalore_2020_2022.csv` (3 years hourly,
+  3 kWp, 13° tilt); `ml/solar/{data,dataset,baselines,models,evaluation}.py`;
+  `to_matrix` moved to `ml/features/builder.py`; `SOLAR_FEATURE_SET_VERSION`.
+  No tests and no CLI command yet.
+- **Provenance:** the data is a reanalysis run through a PV model — tagged
+  `ESTIMATED`, not `MEASURED`. Hourly, one site. Not rooftop readings.
+- **Results** `[estimated]`, from scratch scripts (not reproducible by a repo
+  command yet): pooled test MAE kW — persistence 0.746, smart persistence
+  0.404, historical profile 0.241, linear 0.194, random forest 0.193,
+  gradient boosting 0.182. Random forest and gradient boosting pass the
+  keep-ML rule as written; linear fails at the 24 h lead on validation.
+- **Not settled:** gradient boosting loses to smart persistence at the 1 h
+  lead on test (0.147 vs 0.143 kW) though it wins on validation; validation
+  and test cover different seasons (RF MAE 0.133 vs 0.193). Whether to add a
+  per-lead test check to the rule is open — adding it now would be moving the
+  goalposts after seeing the numbers.
+- **Open questions carried forward:** which tier to keep given Pi Zero cost;
+  the no-future-leak test is still unwritten, so the leak guarantee rests on
+  reading the code and one probe of split date spans. Full test suite not
+  re-run after the `to_matrix` move (only the 14 demand-model tests).
+- **Suite state at session end:** 1 failing test, caused by this session —
+  `test_production_layers_never_import_the_simulator[ml]`, because
+  `ml/solar/dataset.py` imports `ClearSkyProfile` from `simulator/`. The test
+  caught a real layering violation. Fix planned, not started: move the
+  clear-sky geometry to `models/solar.py` and have the simulator import it.
+- Full next-step list is in `ROADMAP.md`'s Phase 6 entry.
+
+### 2026-10-06 — Phase 6 closed: solar forecast on real weather — commit `f33121b`
+
+Continues the 2026-10-05 entry above, which left the suite red and the model
+shape open.
+
+- **Built:** the Phase 6 code and `--train-solar-model` (full list in
+  `ROADMAP.md`'s Phase 6 entry); 34 new tests, 518 passing, up from 484.
+  `models/solar.py` now holds the clear-sky geometry: the failing
+  `test_production_layers_never_import_the_simulator[ml]` from the previous
+  entry was a real layering violation, fixed by moving the physics, not by
+  loosening the test.
+- **What changed the answer:** the first pooled design (one model for all
+  leads, predicting kW) lost to smart persistence at the 1 h lead on test.
+  A synthetic check showed why — one pooled linear model has one coefficient
+  for "how much to trust the current weather" across every lead. Four model
+  shapes were compared on **validation** only; per-lead models predicting the
+  clear-sky index won (validation MAE, linear: 0.167 -> 0.128 kW). Test had
+  been seen before the redesign, which is stated in `ROADMAP.md`.
+- **Results** `[estimated]`, `--train-solar-model`, PVGIS-ERA5 2020-2022
+  hourly, test MAE kW: persistence 0.746, smart persistence 0.404, historical
+  profile 0.241, linear 0.175, random forest 0.174, gradient boosting 0.176.
+  All three ML tiers pass the keep-ML rule; the tiers tie on test.
+- **Decision (author's call):** linear regression is the chosen model
+  (`ml.solar.SELECTED_MODEL`), on Pi Zero cost, since accuracy ties. I
+  recommended it; the author confirmed. Same provisional status as Phase 5's
+  pick pending Phase 12's measured inference cost.
+- **Probing pass, after the numbers:** checked the PVGIS timestamp meaning
+  against its manual (hourly means stamped at the hour's centre), which would
+  leak ~30 minutes if a stamp were read as an instant; the code is leak-free
+  when an issue time is read as the end of that hour, now documented. Found a
+  cryptic `KeyError` when scoring a dataset built with fewer leads; it is a
+  clear `ValueError` now. A re-read of `CLAUDE.md` against the diff found the
+  layering violation above and nothing further: provenance is `ESTIMATED`
+  throughout, splits are walk-forward, baselines precede ML, model and feature
+  versions are stamped.
+- **Not settled:** test is 37-44% worse than validation for every ML tier
+  while the historical profile is flat (different seasons, one window); the
+  24 h lead barely beats persistence (0.188 vs 0.199 kW). Data is a
+  reanalysis, hourly, one site.
+- **Open questions carried forward:** the simulator's clouds have no memory,
+  so Phase 7's "beats reactive in simulation" cannot show forecast skill;
+  replaying the PVGIS series as a simulator solar profile is the candidate fix
+  and needs the author's call. A live Pi needs a completed 60-minute PV mean
+  and 24 h of history as inputs.
+
 ---
 
 ## Maintaining this file
