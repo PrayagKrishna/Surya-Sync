@@ -31,3 +31,8 @@ surya_sync = ["config/*.toml", "storage/*.sql"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.uv.workspace]
+members = [
+    "my-agent",
+]
